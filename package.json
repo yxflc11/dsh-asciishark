@@ -32,11 +32,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yxflc11/dsh-ascii-ocean.git"
+    "url": "git+https://github.com/yxflc11/dsh-asciishark.git"
   },
-  "homepage": "https://github.com/yxflc11/dsh-ascii-ocean#readme",
+  "homepage": "https://github.com/yxflc11/dsh-asciishark#readme",
   "bugs": {
-    "url": "https://github.com/yxflc11/dsh-ascii-ocean/issues"
+    "url": "https://github.com/yxflc11/dsh-asciishark/issues"
   },
   "keywords": [
     "dsh",

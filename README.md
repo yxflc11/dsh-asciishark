@@ -38,7 +38,7 @@
 ### macOS / Linux（bash）
 
 ```sh
-git clone https://github.com/yxflc11/dsh-ascii-ocean.git
+git clone https://github.com/yxflc11/dsh-asciishark.git
 cd dsh-ascii-ocean
 ./install-desktop.sh
 ```
@@ -46,7 +46,7 @@ cd dsh-ascii-ocean
 ### Windows（PowerShell）
 
 ```powershell
-git clone https://github.com/yxflc11/dsh-ascii-ocean.git
+git clone https://github.com/yxflc11/dsh-asciishark.git
 cd dsh-ascii-ocean
 powershell -ExecutionPolicy Bypass -File .\install-desktop.ps1
 ```
