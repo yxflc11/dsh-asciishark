@@ -62,7 +62,7 @@ export function settingsComponent(React: any, ocean: any) {
       return () => queueMicrotask(() => ocean.ensure());
     }, [view]);
     const h = React.createElement;
-    if (view === "summary") return "养一片 ASCII 海：调鱼群、选帧率，让鲨鱼游过玻璃舷窗。";
+    if (view === "summary") return "让 ASCII 鱼群游过工作台，隔着玻璃看海。";
     const off = state.mode === "off";
     const update = (key: keyof OceanPreferences, value: any) => ocean.setPreferences({ [key]: value });
     const slider = (key: keyof OceanPreferences, label: string, min: number, max: number, step: number, text: string, help?: string, disabled = off) => {
@@ -76,53 +76,64 @@ export function settingsComponent(React: any, ocean: any) {
     };
     const checkbox = (key: "glass" | "interactive", label: string, help: string) =>
       h("label", { className: "dsh-ocean-check" },
-        h("input", { type: "checkbox", checked: state[key], disabled: off, onChange: (e: any) => update(key, e.target.checked) }),
-        h("span", null, label, h("small", null, help)));
+        h("span", null, h("strong", null, label), h("small", null, help)),
+        h("input", { type: "checkbox", role: "switch", "aria-label": label, checked: state[key], disabled: off, onChange: (e: any) => update(key, e.target.checked) }));
     const options = [
-      ["dynamic", "出海 · 动态", "让鱼群自在巡游"], ["static", "停泊 · 静态", "把这一刻留成海景"], ["off", "收帆 · 关闭", "回到 DSH 原有背景"],
+      ["dynamic", "动态", "巡游"], ["static", "静态", "定格"], ["off", "关闭", "收海"],
     ];
-    const currents = ["轻浪", "顺流 · 默认", "飞鱼"];
+    const currents = ["轻浪", "顺流", "飞鱼"];
+    const modeHelp = off ? "海洋已关闭，鱼群和海景设置会保留。" : state.reduced
+      ? "系统已开启减少动态效果，鱼群暂时定格。" : state.mode === "static"
+      ? "留住这一刻的海景。鱼群数量和清晰度仍可调整。" : "鱼群自在巡游，离开窗口时会自动休息。";
     return h("div", { className: "dsh-ocean-settings", "data-ocean-controls": true },
       h("div", { className: "dsh-ocean-heading" },
-        h("span", { className: "dsh-ocean-ascii", "aria-hidden": true }, "><(((o>  ~  ><>") ,
-        h("span", null, "这片海，听你的")),
+        h("span", { className: "dsh-ocean-ascii", "aria-hidden": true }, "><>  ~  ><(((o>") ,
+        h("span", null, "留一片海，陪你工作")),
       h("fieldset", { className: "dsh-ocean-mode-group" },
         h("legend", null, "背景模式"),
         h("div", { className: "dsh-ocean-modes" }, ...options.map(([value, label, description]) =>
           h("label", { key: value, className: "dsh-ocean-mode" },
             h("input", { type: "radio", name: "dsh-ocean-mode", value,
               checked: state.mode === value, onChange: () => ocean.setMode(value) }),
-            h("span", null, h("strong", null, label), h("small", null, description)))))),
-      h("p", { className: "dsh-ocean-preview-note" }, "拨动一点，海里就变一点。调整即时生效，并自动保存在此客户端。"),
+            h("strong", null, label), h("span", { className: "dsh-ocean-mode-detail" }, description))))),
+      h("p", { className: "dsh-ocean-preview-note", role: "status" }, modeHelp),
       h("div", { className: "dsh-ocean-grid" },
         h("fieldset", { className: "dsh-ocean-group" }, h("legend", null, "鱼群 · 海里的邻居"),
-          slider("sharkCount", "大鱼数量", 0, 12, 1, `${state.sharkCount} 条`, "六种鲨鱼轮流登场；调到 0，让大家暂时潜水。"),
-          h("label", { className: "dsh-ocean-auto" },
-            h("input", { type: "checkbox", checked: state.fishCount === null, disabled: off,
-              onChange: (e: any) => update("fishCount", e.target.checked ? null : Math.max(85, Math.min(340, Math.round(window.innerWidth * window.innerHeight / 4400)))) }),
-            "小鱼数量随窗口自动调整"),
-          slider("fishCount", "小鱼数量", 0, 600, 1, state.fishCount === null ? "自动 · 85–340 条" : `${state.fishCount} 条`,
-            "取消自动，亲自安排鱼群；鱼越多，绘制也越忙。", off || state.fishCount === null),
-          slider("speed", "游动速度", 0.25, 2, 0.25, `${state.speed}×`, "慢悠悠或追着浪跑；1× 原速，与帧率独立。")),
-        h("fieldset", { className: "dsh-ocean-group" }, h("legend", null, "海面 · 光影与节奏"),
-          slider("clarity", "海洋清晰度", 10, 90, 1, `${state.clarity}%`, "让鱼更近一点；越高越清楚，50% 为默认。"),
-          h("div", { className: "dsh-ocean-control" },
-            h("label", { htmlFor: "dsh-ocean-maxFps" }, "帧率上限"),
-            h("select", { id: "dsh-ocean-maxFps", value: state.maxFps, disabled: off, "aria-describedby": "dsh-ocean-fps-help", onChange: (e: any) => update("maxFps", Number(e.target.value)) },
-              !FPS_OPTIONS.includes(state.maxFps) && h("option", { value: state.maxFps }, `${state.maxFps} fps · 当前旧设置`),
-              ...FPS_OPTIONS.map((fps, i) => h("option", { key: fps, value: fps }, `${fps} fps · ${currents[i]}`))),
-            h("small", { id: "dsh-ocean-fps-help" }, state.maxFps > 60
-              ? "已选择高刷上限。更细的游动节奏需要高刷屏；实际帧率受设备负载影响。"
-              : "60 fps 是默认帧率。这里设定绘制上限，实际流畅度也取决于屏幕与设备负载。")),
-          checkbox("glass", "侧栏玻璃", "透过玻璃舷窗看海，保留折射与朦胧光影。"),
-          checkbox("interactive", "鼠标互动", "指针带鱼群转弯，点一下空白海面，溅起水花。"))),
+          slider("sharkCount", "鲨鱼数量", 0, 12, 1, `${state.sharkCount} 条`, "六种鲨鱼搭配登场，0 条时全部隐藏。"),
+          h("div", { className: "dsh-ocean-control dsh-ocean-fish" },
+            h("div", { className: "dsh-ocean-label" },
+              h("span", { id: "dsh-ocean-fish-label" }, "小鱼数量"),
+              h("label", { className: "dsh-ocean-auto" },
+                h("input", { type: "checkbox", "aria-label": "小鱼数量随窗口自动调整", checked: state.fishCount === null, disabled: off,
+                  onChange: (e: any) => update("fishCount", e.target.checked ? null : Math.max(85, Math.min(340, Math.round(window.innerWidth * window.innerHeight / 4400)))) }), "自动")),
+            state.fishCount === null
+              ? h("div", { className: "dsh-ocean-auto-info" },
+                  h("span", { className: "dsh-ocean-school", "aria-hidden": true }, "><>  ><>  ><>") ,
+                  h("small", null, "随窗口大小安排，85–340 条。"))
+              : h("div", null,
+                  h("div", { className: "dsh-ocean-manual-value" }, h("output", { htmlFor: "dsh-ocean-fishCount" }, `${state.fishCount} 条`)),
+                  h("input", { id: "dsh-ocean-fishCount", type: "range", min: 0, max: 600, step: 1, value: state.fishCount, disabled: off,
+                    "aria-labelledby": "dsh-ocean-fish-label", "aria-valuetext": `${state.fishCount} 条`, onChange: (e: any) => update("fishCount", Number(e.target.value)) }))),
+          slider("speed", "游动速度", 0.25, 2, 0.25, `${state.speed}×`, state.mode === "static" || state.reduced ? "已保存速度，恢复动态后生效。" : "慢慢游，或追着浪跑。1× 为原速。")),
+        h("fieldset", { className: "dsh-ocean-group" }, h("legend", null, "海景 · 光影与节奏"),
+          slider("clarity", "海洋清晰度", 10, 90, 1, `${state.clarity}%`, "低一些衬托文字，高一些看清鱼群。"),
+          h("fieldset", { className: "dsh-ocean-control dsh-ocean-fps", "aria-describedby": "dsh-ocean-fps-help", disabled: off },
+            h("legend", null, "帧率上限"),
+            !FPS_OPTIONS.includes(state.maxFps) && h("p", { className: "dsh-ocean-legacy" }, `当前沿用 ${state.maxFps} fps，可选择下方档位切换。`),
+            h("div", { className: "dsh-ocean-fps-options" }, ...FPS_OPTIONS.map((fps, i) => h("label", { key: fps, className: "dsh-ocean-fps-option" },
+              h("input", { type: "radio", name: "dsh-ocean-fps", value: fps, checked: state.maxFps === fps, onChange: () => update("maxFps", fps) }),
+              h("span", null, h("strong", null, `${fps}`, h("span", { className: "dsh-ocean-unit" }, " fps")),
+                h("small", null, currents[i], fps === 60 ? " · 默认" : ""))))),
+            h("small", { id: "dsh-ocean-fps-help" }, state.mode === "static" || state.reduced
+              ? "已保存帧率上限，恢复动态后生效。" : state.maxFps > 60
+              ? "高刷需屏幕支持，实际帧率受设备负载影响。"
+              : "只调流畅度，不改变鱼的游动速度。")),
+          checkbox("glass", "侧栏玻璃", "把侧栏变成透着海景的玻璃舷窗。"),
+          checkbox("interactive", "鼠标互动", state.mode === "static" || state.reduced ? "恢复动态后，可拨动鱼群、点起水花。" : "指针靠近，小鱼避让；点击空白处泛起水花。"))),
       h("div", { className: "dsh-ocean-footer" },
         h("p", { role: "status", "aria-live": "polite", className: "dsh-ocean-status" },
           !state.saved ? "设置已生效，但本次无法保存；下次打开可能恢复之前的设置。" :
-          off ? "已收帆，鱼群配置替你留着。出海时继续。" :
-          state.reduced ? "已遵循系统的减少动态效果设置，显示静态画面。" :
-          state.mode === "static" ? "海景已停泊；仍可调整鱼群。切回动态，再接着游。" :
-          state.fallback ? "正在使用兼容绘制，所选参数保持生效。" : "航海偏好已保存。放心调节，这里不会误触水花。"),
-        h("button", { type: "button", onClick: () => ocean.resetPreferences() }, "恢复默认海景")));
+          state.fallback ? "设置已保存 · 正在使用兼容绘制" : "更改会自动保存在此设备"),
+        h("button", { type: "button", title: "恢复动态模式及所有默认参数", onClick: () => ocean.resetPreferences() }, "恢复默认海景")));
   };
 }
