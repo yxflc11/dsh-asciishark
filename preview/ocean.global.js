@@ -129,12 +129,15 @@
   var FISH_COHESION_K = 1;
   var FISH_FLEE_K = 1100;
   var BLIND_COS = -0.6;
+  var SHARK_KINDS = /* @__PURE__ */ new Set(["classic", "hammerhead", "zebra", "tiger", "greathammer", "mako", "thresher", "nurse"]);
+  function validSharks(specs) {
+    return specs.filter((spec) => spec && SHARK_KINDS.has(spec.kind) && Number.isFinite(spec.size) && spec.size > 0).slice(0, 12).map(({ kind, size }) => ({ kind, size: clamp(size, 0.1, 2) }));
+  }
+  function population(value, fallback) {
+    if (value === null) return null;
+    return typeof value === "number" && Number.isFinite(value) ? clamp(Math.round(value), 0, 600) : fallback;
+  }
   var World = class {
-    /** fishCount overrides the area-based population (the sidebar wants a single small school). */
-    constructor(sharkSpecs = DEFAULT_SHARKS, fishCount) {
-      this.sharkSpecs = sharkSpecs;
-      this.fishCount = fishCount;
-    }
     width = 0;
     height = 0;
     time = 0;
@@ -155,15 +158,32 @@
     bucketNext = new Int32Array(0);
     lastSpawn = 0;
     tmp = { x: 0, y: 0 };
+    initialized = false;
+    nextSharkId = 1;
+    sharkSpecs;
+    fishCount;
+    /** null keeps the original area-based population; zero is an empty ocean. */
+    constructor(sharkSpecs = DEFAULT_SHARKS, fishCount = null) {
+      this.sharkSpecs = validSharks(Array.isArray(sharkSpecs) ? sharkSpecs : DEFAULT_SHARKS);
+      this.fishCount = population(fishCount, null);
+    }
+    /** Apply population changes without restarting time or moving retained animals. */
+    configure(options) {
+      if (options.fishCount !== void 0) this.fishCount = population(options.fishCount, this.fishCount);
+      const sharksChanged = Array.isArray(options.sharks);
+      if (sharksChanged) this.sharkSpecs = validSharks(options.sharks);
+      if (!this.initialized) return;
+      this.resizePopulation();
+      if (sharksChanged) this.reconcileSharks();
+    }
     resize(width, height, cellW, cellH) {
-      const first = this.width === 0;
       this.width = width;
       this.height = height;
       this.sepX = SPECIES.map((sp) => sp.spacing[0] * cellW);
       this.sepY = SPECIES.map((sp) => sp.spacing[1] * cellH);
       this.perception = Math.max(cellH * 3, cellW * 5.5);
       this.foreignSep = cellW * 3;
-      if (first || this.fish.length === 0) {
+      if (!this.initialized) {
         this.seed();
         return;
       }
@@ -171,49 +191,80 @@
         f.x = clamp(f.x, 0, width);
         f.y = clamp(f.y, 0, height);
       }
+      this.resizePopulation();
     }
     seed() {
+      this.initialized = true;
+      this.sharks = this.sharkSpecs.map((spec, index) => this.createShark(spec, index, this.sharkSpecs.length));
+      this.sharks.sort((a, b) => a.length - b.length);
+      this.fish = [];
+      this.resizePopulation();
+    }
+    createShark({ kind, size }, index, count) {
       const { width: W, height: H } = this;
       const minSide = Math.min(W, H);
-      const baseLength = clamp(minSide * 0.44, 170, 430);
-      const sharkCount = this.sharkSpecs.length;
-      this.sharks = [];
-      for (let i = 0; i < sharkCount; i++) {
-        const { kind, size } = this.sharkSpecs[i];
-        const length = baseLength * size;
-        const orbitRadius = minSide * rand(0.28, 0.4);
-        const a = i / sharkCount * TAU + rand(-0.4, 0.4);
-        const orbitDir = i % 2 === 0 ? 1 : -1;
-        const x = W / 2 + Math.cos(a) * orbitRadius * (W / minSide) * 0.9;
-        const y = H / 2 + Math.sin(a) * orbitRadius;
-        const heading = a + orbitDir * Math.PI / 2;
-        const nodes = new Float32Array(SHARK_NODES * 2);
-        const seg = length / (SHARK_NODES - 1);
-        for (let n = 0; n < SHARK_NODES; n++) {
-          nodes[n * 2] = x - Math.cos(heading) * seg * n;
-          nodes[n * 2 + 1] = y - Math.sin(heading) * seg * n;
-        }
-        this.sharks.push({
-          id: i + 1,
-          kind,
-          length,
-          nodes,
-          heading,
-          speed: 30,
-          phase: rand(0, TAU),
-          turn: 0,
-          hunger: rand(0.25, 0.75),
-          wander: 0,
-          orbitDir,
-          orbitRadius,
-          target: null,
-          retargetAt: 0,
-          depth: size
-        });
+      const length = clamp(minSide * 0.44, 170, 430) * size;
+      const orbitRadius = minSide * rand(0.28, 0.4);
+      const a = index / count * TAU + rand(-0.4, 0.4);
+      const orbitDir = index % 2 === 0 ? 1 : -1;
+      const x = W / 2 + Math.cos(a) * orbitRadius * (W / minSide) * 0.9;
+      const y = H / 2 + Math.sin(a) * orbitRadius;
+      const heading = a + orbitDir * Math.PI / 2;
+      const nodes = new Float32Array(SHARK_NODES * 2);
+      const seg = length / (SHARK_NODES - 1);
+      for (let n = 0; n < SHARK_NODES; n++) {
+        nodes[n * 2] = x - Math.cos(heading) * seg * n;
+        nodes[n * 2 + 1] = y - Math.sin(heading) * seg * n;
       }
+      return {
+        id: this.nextSharkId++,
+        kind,
+        length,
+        nodes,
+        heading,
+        speed: 30,
+        phase: rand(0, TAU),
+        turn: 0,
+        hunger: rand(0.25, 0.75),
+        wander: 0,
+        orbitDir,
+        orbitRadius,
+        target: null,
+        retargetAt: this.time,
+        depth: size
+      };
+    }
+    reconcileSharks() {
+      const available = this.sharks.slice();
+      this.sharks = this.sharkSpecs.map((spec, index) => {
+        let match = available.findIndex((shark2) => shark2.kind === spec.kind && shark2.depth === spec.size);
+        if (match < 0) match = available.findIndex((shark2) => shark2.kind === spec.kind);
+        if (match < 0) return this.createShark(spec, index, this.sharkSpecs.length);
+        const shark = available.splice(match, 1)[0];
+        if (shark.depth !== spec.size) {
+          const ratio = spec.size / shark.depth;
+          for (let k = 1; k < SHARK_NODES; k++) {
+            shark.nodes[k * 2] = shark.nodes[0] + (shark.nodes[k * 2] - shark.nodes[0]) * ratio;
+            shark.nodes[k * 2 + 1] = shark.nodes[1] + (shark.nodes[k * 2 + 1] - shark.nodes[1]) * ratio;
+          }
+          shark.length *= ratio;
+          shark.depth = spec.size;
+        }
+        return shark;
+      });
       this.sharks.sort((a, b) => a.length - b.length);
+    }
+    resizePopulation() {
+      const { width: W, height: H } = this;
       const total = this.fishCount ?? clamp(Math.round(W * H / 4400), 85, 340);
-      this.fish = [];
+      if (this.fish.length === total) return;
+      if (this.fish.length > total) {
+        const survivors = this.fish.filter((fish) => fish.alive).slice(0, total);
+        if (survivors.length < total) survivors.push(...this.fish.filter((fish) => !fish.alive).slice(0, total - survivors.length));
+        this.fish = survivors;
+        const retained = new Set(this.fish);
+        for (const shark of this.sharks) if (shark.target && !retained.has(shark.target)) shark.target = null;
+      }
       while (this.fish.length < total) {
         const species = pickSpecies();
         const sp = SPECIES[species];
@@ -1418,6 +1469,9 @@
   var STEP = 1 / 60;
   var MAX_STEPS = 4;
   var FRAME_EPSILON = 0.5;
+  function finiteRange(value, min, max, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+  }
   var INTERACTIVE_SELECTOR = [
     "a",
     "button",
@@ -1444,12 +1498,14 @@
   var OceanEngine = class {
     constructor(canvas, sharks, options = {}) {
       this.canvas = canvas;
-      this.maxFps = Math.max(5, Math.min(60, options.maxFps ?? 60));
-      this.maxDpr = options.maxDpr ?? 2;
+      this.maxFps = finiteRange(options.maxFps, 5, 60, 60);
+      this.maxDpr = finiteRange(options.maxDpr, 1, 2, 2);
+      this.speed = finiteRange(options.speed, 0.25, 2, 1);
+      this.interactive = options.interactive !== false;
       this.initialStatic = options.initialStatic === true;
       this.paused = options.paused === true || this.initialStatic;
       this.onFrame = options.onFrame;
-      this.world = new World(sharks);
+      this.world = new World(sharks, options.fishCount);
       this.renderer = new AsciiRenderer(canvas);
       this.renderer.setFontFamily(getComputedStyle(canvas).fontFamily);
       this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -1486,6 +1542,8 @@
     maxDpr;
     initialStatic;
     onFrame;
+    speed;
+    interactive;
     /** Rendered frames, used by the glass backdrop capture to avoid redundant work. */
     frames = 0;
     paused = false;
@@ -1504,14 +1562,23 @@
     }
     /** Change the render-rate cap at runtime (adaptive quality). */
     setMaxFps(fps) {
-      this.maxFps = Math.max(5, Math.min(60, fps));
+      this.maxFps = finiteRange(fps, 5, 60, this.maxFps);
       cancelAnimationFrame(this.raf);
       this.schedule();
     }
     /** Change the backing-store DPR cap at runtime (adaptive quality). */
     setMaxDpr(dpr) {
-      this.maxDpr = Math.max(1, Math.min(2, dpr));
+      this.maxDpr = finiteRange(dpr, 1, 2, this.maxDpr);
       this.resize();
+    }
+    /** Update live controls without recreating the canvas, world, or playback loop. */
+    configure(options) {
+      if (this.disposed) return;
+      this.world.configure(options);
+      this.speed = finiteRange(options.speed, 0.25, 2, this.speed);
+      if (typeof options.interactive === "boolean") this.interactive = options.interactive;
+      if (!this.interactive) this.world.pointer.active = false;
+      if (this.paused || this.reducedMotion.matches) this.drawStill();
     }
     destroy() {
       this.disposed = true;
@@ -1552,16 +1619,17 @@
       }
       const interval = 1e3 / this.maxFps;
       this.nextDraw += Math.max(1, Math.floor((now - this.nextDraw) / interval) + 1) * interval;
-      const dt = Math.min(0.1, (now - this.last) / 1e3);
+      const dt = Math.min(Math.max(0.1, 1 / this.maxFps), Math.max(0, (now - this.last) / 1e3)) * this.speed;
       this.last = now;
       this.acc += dt;
       let steps = 0;
-      while (this.acc >= STEP && steps < MAX_STEPS) {
+      const maxSteps = Math.max(MAX_STEPS, Math.ceil(this.speed / this.maxFps / STEP) + 1);
+      while (this.acc + 1e-10 >= STEP && steps < maxSteps) {
         this.world.step(STEP);
-        this.acc -= STEP;
+        this.acc = Math.max(0, this.acc - STEP);
         steps++;
       }
-      if (steps === MAX_STEPS) this.acc = 0;
+      if (steps === maxSteps && this.acc >= STEP) this.acc %= STEP;
       this.renderer.render(this.world, dt);
       this.frames++;
       this.onFrame?.();
@@ -1595,7 +1663,7 @@
       return { x, y, inside };
     }
     onPointerMove = (e) => {
-      if (this.disposed || this.paused || !this.visible || this.reducedMotion.matches || isInteractiveTarget(e)) {
+      if (this.disposed || this.paused || !this.visible || this.reducedMotion.matches || !this.interactive || isInteractiveTarget(e)) {
         this.world.pointer.active = false;
         return;
       }
@@ -1606,7 +1674,7 @@
       p.active = inside && e.pointerType !== "touch";
     };
     onPointerDown = (e) => {
-      if (this.disposed || this.paused || !this.visible || this.reducedMotion.matches || e.button !== void 0 && e.button !== 0 || isInteractiveTarget(e)) return;
+      if (this.disposed || this.paused || !this.visible || this.reducedMotion.matches || !this.interactive || e.button !== void 0 && e.button !== 0 || isInteractiveTarget(e)) return;
       const { x, y, inside } = this.toLocal(e);
       if (inside) this.world.splash(x, y);
     };

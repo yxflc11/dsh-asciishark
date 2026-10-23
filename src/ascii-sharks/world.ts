@@ -84,6 +84,17 @@ const FISH_ALIGN_K = 1.4;
 const FISH_COHESION_K = 1;
 const FISH_FLEE_K = 1100;
 const BLIND_COS = -0.6; // ~127° either side of the heading is visible
+const SHARK_KINDS = new Set<SharkKind>(["classic", "hammerhead", "zebra", "tiger", "greathammer", "mako", "thresher", "nurse"]);
+
+function validSharks(specs: SharkSpec[]): SharkSpec[] {
+  return specs.filter((spec) => spec && SHARK_KINDS.has(spec.kind) && Number.isFinite(spec.size) && spec.size > 0)
+    .slice(0, 12).map(({ kind, size }) => ({ kind, size: clamp(size, 0.1, 2) }));
+}
+
+function population(value: number | null | undefined, fallback: number | null): number | null {
+  if (value === null) return null;
+  return typeof value === "number" && Number.isFinite(value) ? clamp(Math.round(value), 0, 600) : fallback;
+}
 
 export class World {
   width = 0;
@@ -108,14 +119,28 @@ export class World {
   private lastSpawn = 0;
   private tmp = { x: 0, y: 0 };
 
-  /** fishCount overrides the area-based population (the sidebar wants a single small school). */
-  constructor(
-    private sharkSpecs: SharkSpec[] = DEFAULT_SHARKS,
-    private fishCount?: number,
-  ) {}
+  private initialized = false;
+  private nextSharkId = 1;
+  private sharkSpecs: SharkSpec[];
+  private fishCount: number | null;
+
+  /** null keeps the original area-based population; zero is an empty ocean. */
+  constructor(sharkSpecs: SharkSpec[] = DEFAULT_SHARKS, fishCount: number | null = null) {
+    this.sharkSpecs = validSharks(Array.isArray(sharkSpecs) ? sharkSpecs : DEFAULT_SHARKS);
+    this.fishCount = population(fishCount, null);
+  }
+
+  /** Apply population changes without restarting time or moving retained animals. */
+  configure(options: { fishCount?: number | null; sharks?: SharkSpec[] }) {
+    if (options.fishCount !== undefined) this.fishCount = population(options.fishCount, this.fishCount);
+    const sharksChanged = Array.isArray(options.sharks);
+    if (sharksChanged) this.sharkSpecs = validSharks(options.sharks!);
+    if (!this.initialized) return;
+    this.resizePopulation();
+    if (sharksChanged) this.reconcileSharks();
+  }
 
   resize(width: number, height: number, cellW: number, cellH: number) {
-    const first = this.width === 0;
     this.width = width;
     this.height = height;
     // Spacing is set in grid cells so every fish lands in its own cell.
@@ -124,7 +149,7 @@ export class World {
     this.perception = Math.max(cellH * 3, cellW * 5.5);
     this.foreignSep = cellW * 3;
 
-    if (first || this.fish.length === 0) {
+    if (!this.initialized) {
       this.seed();
       return;
     }
@@ -132,53 +157,71 @@ export class World {
       f.x = clamp(f.x, 0, width);
       f.y = clamp(f.y, 0, height);
     }
+    this.resizePopulation();
   }
 
   seed() {
+    this.initialized = true;
+    this.sharks = this.sharkSpecs.map((spec, index) => this.createShark(spec, index, this.sharkSpecs.length));
+    this.sharks.sort((a, b) => a.length - b.length);
+    this.fish = [];
+    this.resizePopulation();
+  }
+
+  private createShark({ kind, size }: SharkSpec, index: number, count: number): Shark {
     const { width: W, height: H } = this;
     const minSide = Math.min(W, H);
-    const baseLength = clamp(minSide * 0.44, 170, 430);
-    const sharkCount = this.sharkSpecs.length;
-
-    this.sharks = [];
-    for (let i = 0; i < sharkCount; i++) {
-      const { kind, size } = this.sharkSpecs[i];
-      const length = baseLength * size;
-      const orbitRadius = minSide * rand(0.28, 0.4);
-      const a = (i / sharkCount) * TAU + rand(-0.4, 0.4);
-      const orbitDir: 1 | -1 = i % 2 === 0 ? 1 : -1;
-      const x = W / 2 + Math.cos(a) * orbitRadius * (W / minSide) * 0.9;
-      const y = H / 2 + Math.sin(a) * orbitRadius;
-      const heading = a + (orbitDir * Math.PI) / 2;
-      const nodes = new Float32Array(SHARK_NODES * 2);
-      const seg = length / (SHARK_NODES - 1);
-      for (let n = 0; n < SHARK_NODES; n++) {
-        nodes[n * 2] = x - Math.cos(heading) * seg * n;
-        nodes[n * 2 + 1] = y - Math.sin(heading) * seg * n;
-      }
-      this.sharks.push({
-        id: i + 1,
-        kind,
-        length,
-        nodes,
-        heading,
-        speed: 30,
-        phase: rand(0, TAU),
-        turn: 0,
-        hunger: rand(0.25, 0.75),
-        wander: 0,
-        orbitDir,
-        orbitRadius,
-        target: null,
-        retargetAt: 0,
-        depth: size,
-      });
+    const length = clamp(minSide * 0.44, 170, 430) * size;
+    const orbitRadius = minSide * rand(0.28, 0.4);
+    const a = (index / count) * TAU + rand(-0.4, 0.4);
+    const orbitDir: 1 | -1 = index % 2 === 0 ? 1 : -1;
+    const x = W / 2 + Math.cos(a) * orbitRadius * (W / minSide) * 0.9;
+    const y = H / 2 + Math.sin(a) * orbitRadius;
+    const heading = a + (orbitDir * Math.PI) / 2;
+    const nodes = new Float32Array(SHARK_NODES * 2);
+    const seg = length / (SHARK_NODES - 1);
+    for (let n = 0; n < SHARK_NODES; n++) {
+      nodes[n * 2] = x - Math.cos(heading) * seg * n;
+      nodes[n * 2 + 1] = y - Math.sin(heading) * seg * n;
     }
-    // Smaller (farther) sharks draw first so the big one swims over them.
-    this.sharks.sort((a, b) => a.length - b.length);
+    return { id: this.nextSharkId++, kind, length, nodes, heading, speed: 30,
+      phase: rand(0, TAU), turn: 0, hunger: rand(0.25, 0.75), wander: 0,
+      orbitDir, orbitRadius, target: null, retargetAt: this.time, depth: size };
+  }
 
+  private reconcileSharks() {
+    const available = this.sharks.slice();
+    this.sharks = this.sharkSpecs.map((spec, index) => {
+      let match = available.findIndex((shark) => shark.kind === spec.kind && shark.depth === spec.size);
+      if (match < 0) match = available.findIndex((shark) => shark.kind === spec.kind);
+      if (match < 0) return this.createShark(spec, index, this.sharkSpecs.length);
+      const shark = available.splice(match, 1)[0];
+      if (shark.depth !== spec.size) {
+        const ratio = spec.size / shark.depth;
+        for (let k = 1; k < SHARK_NODES; k++) {
+          shark.nodes[k * 2] = shark.nodes[0] + (shark.nodes[k * 2] - shark.nodes[0]) * ratio;
+          shark.nodes[k * 2 + 1] = shark.nodes[1] + (shark.nodes[k * 2 + 1] - shark.nodes[1]) * ratio;
+        }
+        shark.length *= ratio;
+        shark.depth = spec.size;
+      }
+      return shark;
+    });
+    // Retain the existing depth ordering used by the renderer.
+    this.sharks.sort((a, b) => a.length - b.length);
+  }
+
+  private resizePopulation() {
+    const { width: W, height: H } = this;
     const total = this.fishCount ?? clamp(Math.round((W * H) / 4400), 85, 340);
-    this.fish = [];
+    if (this.fish.length === total) return;
+    if (this.fish.length > total) {
+      const survivors = this.fish.filter((fish) => fish.alive).slice(0, total);
+      if (survivors.length < total) survivors.push(...this.fish.filter((fish) => !fish.alive).slice(0, total - survivors.length));
+      this.fish = survivors;
+      const retained = new Set(this.fish);
+      for (const shark of this.sharks) if (shark.target && !retained.has(shark.target)) shark.target = null;
+    }
     while (this.fish.length < total) {
       const species = pickSpecies();
       const sp = SPECIES[species];

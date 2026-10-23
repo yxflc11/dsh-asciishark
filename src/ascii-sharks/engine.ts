@@ -5,6 +5,17 @@ const STEP = 1 / 60;
 const MAX_STEPS = 4;
 const FRAME_EPSILON = 0.5;
 
+function finiteRange(value: number | undefined, min: number, max: number, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+}
+
+export interface OceanConfiguration {
+  fishCount?: number | null;
+  sharks?: SharkSpec[];
+  speed?: number;
+  interactive?: boolean;
+}
+
 const INTERACTIVE_SELECTOR = [
   "a", "button", "input", "textarea", "select", "option", "label", "summary",
   '[contenteditable]:not([contenteditable="false"])', "[data-ocean-controls]",
@@ -44,6 +55,8 @@ export class OceanEngine {
   private maxDpr: number;
   private initialStatic: boolean;
   private onFrame?: () => void;
+  private speed: number;
+  private interactive: boolean;
   /** Rendered frames, used by the glass backdrop capture to avoid redundant work. */
   frames = 0;
   private paused = false;
@@ -51,14 +64,16 @@ export class OceanEngine {
   constructor(
     private canvas: HTMLCanvasElement,
     sharks?: SharkSpec[],
-    options: { maxFps?: number; maxDpr?: number; paused?: boolean; initialStatic?: boolean; onFrame?: () => void } = {},
+    options: OceanConfiguration & { maxFps?: number; maxDpr?: number; paused?: boolean; initialStatic?: boolean; onFrame?: () => void } = {},
   ) {
-    this.maxFps = Math.max(5, Math.min(60, options.maxFps ?? 60));
-    this.maxDpr = options.maxDpr ?? 2;
+    this.maxFps = finiteRange(options.maxFps, 5, 60, 60);
+    this.maxDpr = finiteRange(options.maxDpr, 1, 2, 2);
+    this.speed = finiteRange(options.speed, 0.25, 2, 1);
+    this.interactive = options.interactive !== false;
     this.initialStatic = options.initialStatic === true;
     this.paused = options.paused === true || this.initialStatic;
     this.onFrame = options.onFrame;
-    this.world = new World(sharks);
+    this.world = new World(sharks, options.fishCount);
     this.renderer = new AsciiRenderer(canvas);
     this.renderer.setFontFamily(getComputedStyle(canvas).fontFamily);
     this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -102,15 +117,25 @@ export class OceanEngine {
 
   /** Change the render-rate cap at runtime (adaptive quality). */
   setMaxFps(fps: number) {
-    this.maxFps = Math.max(5, Math.min(60, fps));
+    this.maxFps = finiteRange(fps, 5, 60, this.maxFps);
     cancelAnimationFrame(this.raf);
     this.schedule();
   }
 
   /** Change the backing-store DPR cap at runtime (adaptive quality). */
   setMaxDpr(dpr: number) {
-    this.maxDpr = Math.max(1, Math.min(2, dpr));
+    this.maxDpr = finiteRange(dpr, 1, 2, this.maxDpr);
     this.resize();
+  }
+
+  /** Update live controls without recreating the canvas, world, or playback loop. */
+  configure(options: OceanConfiguration) {
+    if (this.disposed) return;
+    this.world.configure(options);
+    this.speed = finiteRange(options.speed, 0.25, 2, this.speed);
+    if (typeof options.interactive === "boolean") this.interactive = options.interactive;
+    if (!this.interactive) this.world.pointer.active = false;
+    if (this.paused || this.reducedMotion.matches) this.drawStill();
   }
 
   destroy() {
@@ -157,16 +182,18 @@ export class OceanEngine {
     // Keep the fractional interval instead of rounding the cap down to a
     // divisor of the display's refresh rate. Long stalls still draw only once.
     this.nextDraw += Math.max(1, Math.floor((now - this.nextDraw) / interval) + 1) * interval;
-    const dt = Math.min(0.1, (now - this.last) / 1000);
+    const dt = Math.min(Math.max(0.1, 1 / this.maxFps), Math.max(0, (now - this.last) / 1000)) * this.speed;
     this.last = now;
     this.acc += dt;
     let steps = 0;
-    while (this.acc >= STEP && steps < MAX_STEPS) {
+    // One extra step carries fractional time across display/timer jitter.
+    const maxSteps = Math.max(MAX_STEPS, Math.ceil(this.speed / this.maxFps / STEP) + 1);
+    while (this.acc + 1e-10 >= STEP && steps < maxSteps) {
       this.world.step(STEP);
-      this.acc -= STEP;
+      this.acc = Math.max(0, this.acc - STEP);
       steps++;
     }
-    if (steps === MAX_STEPS) this.acc = 0;
+    if (steps === maxSteps && this.acc >= STEP) this.acc %= STEP;
     this.renderer.render(this.world, dt);
     this.frames++;
     this.onFrame?.();
@@ -204,7 +231,7 @@ export class OceanEngine {
   }
 
   private onPointerMove = (e: PointerEvent) => {
-    if (this.disposed || this.paused || !this.visible || this.reducedMotion.matches || isInteractiveTarget(e)) {
+    if (this.disposed || this.paused || !this.visible || this.reducedMotion.matches || !this.interactive || isInteractiveTarget(e)) {
       this.world.pointer.active = false;
       return;
     }
@@ -216,7 +243,7 @@ export class OceanEngine {
   };
 
   private onPointerDown = (e: PointerEvent) => {
-    if (this.disposed || this.paused || !this.visible || this.reducedMotion.matches ||
+    if (this.disposed || this.paused || !this.visible || this.reducedMotion.matches || !this.interactive ||
       (e.button !== undefined && e.button !== 0) || isInteractiveTarget(e)) return;
     const { x, y, inside } = this.toLocal(e);
     if (inside) this.world.splash(x, y);

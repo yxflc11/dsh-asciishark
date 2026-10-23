@@ -4,7 +4,8 @@
  * calls. It also hands small snapshots back for the liquid-glass sidebar.
  *
  * Protocol (main → worker):
- *   init     { canvas, width, height, dpr, maxFps, sharks, fontFamily, reducedMotion, paused, initialStatic }
+ *   init     { canvas, width, height, dpr, maxFps, sharks, fishCount, speed, interactive, fontFamily, reducedMotion, paused, initialStatic }
+ *   configure { fishCount?, sharks?, speed?, interactive? }
  *   resize   { width, height, dpr }
  *   fps      { fps }
  *   reduce   { reducedMotion }
@@ -23,12 +24,18 @@ const STEP = 1 / 60;
 const MAX_STEPS = 4;
 const FRAME_EPSILON = 0.5;
 
+function finiteRange(value: unknown, min: number, max: number, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+}
+
 let canvas: OffscreenCanvas | null = null;
 let renderer: AsciiRenderer | null = null;
 let world: World | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let snapshotCanvas: OffscreenCanvas | null = null;
 let maxFps = 60;
+let speed = 1;
+let interactive = true;
 let dpr = 1;
 let paused = false;
 let reduced = false;
@@ -65,16 +72,17 @@ function frame() {
   }
   const interval = 1000 / maxFps;
   nextDraw += Math.max(1, Math.floor((now - nextDraw) / interval) + 1) * interval;
-  const dt = Math.min(0.1, (now - last) / 1000);
+  const dt = Math.min(Math.max(0.1, 1 / maxFps), Math.max(0, (now - last) / 1000)) * speed;
   last = now;
   acc += dt;
   let steps = 0;
-  while (acc >= STEP && steps < MAX_STEPS) {
+  const maxSteps = Math.max(MAX_STEPS, Math.ceil(speed / maxFps / STEP) + 1);
+  while (acc + 1e-10 >= STEP && steps < maxSteps) {
     world.step(STEP);
-    acc -= STEP;
+    acc = Math.max(0, acc - STEP);
     steps++;
   }
-  if (steps === MAX_STEPS) acc = 0;
+  if (steps === maxSteps && acc >= STEP) acc %= STEP;
   renderer.render(world, dt);
   frames++;
   const wait = Math.max(0, nextDraw - performance.now());
@@ -98,11 +106,11 @@ function resize(nextWidth: number, nextHeight: number, nextDpr: number) {
   if (reduced || paused) drawStill(frames === 0 && (reduced || initialStatic));
 }
 
-function makeRenderer(nextCanvas: OffscreenCanvas, fontFamily: string, sharks: SharkSpec[]) {
+function makeRenderer(nextCanvas: OffscreenCanvas, fontFamily: string, sharks: SharkSpec[] | undefined, fishCount: number | null | undefined) {
   canvas = nextCanvas;
   renderer = new AsciiRenderer(nextCanvas as unknown as HTMLCanvasElement);
   renderer.setFontFamily(fontFamily || "ui-monospace, Menlo, monospace");
-  world = new World(sharks);
+  world = new World(sharks, fishCount);
 }
 
 function replySnapshot(
@@ -143,8 +151,10 @@ self.onmessage = (event: MessageEvent) => {
   const data = event.data as Record<string, any>;
   switch (data?.type) {
     case "init": {
-      makeRenderer(data.canvas as OffscreenCanvas, data.fontFamily ?? "", (data.sharks ?? []) as SharkSpec[]);
-      maxFps = Math.max(5, Math.min(60, data.maxFps ?? 60));
+      makeRenderer(data.canvas as OffscreenCanvas, data.fontFamily ?? "", data.sharks as SharkSpec[] | undefined, data.fishCount);
+      maxFps = finiteRange(data.maxFps, 5, 60, 60);
+      speed = finiteRange(data.speed, 0.25, 2, 1);
+      interactive = data.interactive !== false;
       reduced = data.reducedMotion === true;
       initialStatic = data.initialStatic === true;
       paused = data.paused === true || initialStatic;
@@ -156,8 +166,16 @@ self.onmessage = (event: MessageEvent) => {
       resize(data.width, data.height, data.dpr ?? dpr);
       break;
     case "fps":
-      maxFps = Math.max(5, Math.min(60, data.fps ?? 60));
+      maxFps = finiteRange(data.fps, 5, 60, maxFps);
       schedule();
+      break;
+    case "configure":
+      if (!world || disposed) break;
+      world.configure(data);
+      speed = finiteRange(data.speed, 0.25, 2, speed);
+      if (typeof data.interactive === "boolean") interactive = data.interactive;
+      if (!interactive) world.pointer.active = false;
+      if (paused || reduced) drawStill();
       break;
     case "reduce":
       reduced = data.reducedMotion === true;
@@ -180,13 +198,15 @@ self.onmessage = (event: MessageEvent) => {
       break;
     case "pointer":
       if (world) {
-        world.pointer.x = data.x;
-        world.pointer.y = data.y;
-        world.pointer.active = !paused && !reduced && data.active === true;
+        if (Number.isFinite(data.x) && Number.isFinite(data.y)) {
+          world.pointer.x = data.x;
+          world.pointer.y = data.y;
+          world.pointer.active = !paused && !reduced && interactive && data.active === true;
+        } else world.pointer.active = false;
       }
       break;
     case "splash":
-      if (!paused && !reduced && !disposed) world?.splash(data.x, data.y);
+      if (!paused && !reduced && !disposed && interactive && Number.isFinite(data.x) && Number.isFinite(data.y)) world?.splash(data.x, data.y);
       break;
     case "snapshot":
       replySnapshot(data.requestId, data.rect, data.cw, data.ch, data.since ?? -1, data.force === true);
