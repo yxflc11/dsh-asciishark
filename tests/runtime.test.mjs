@@ -30,7 +30,7 @@ const bundle = await build({
       builder.onResolve({ filter: /^\.\/(renderer|world)$/ }, ({ path }) => ({ path, namespace: "boundary" }));
       builder.onLoad({ filter: /.*/, namespace: "boundary" }, ({ path }) => {
         if (path === "index") return { contents: `export { OceanEngine } from ${JSON.stringify(resolve(sourceRoot, "ascii-sharks/engine.ts"))};`, resolveDir: sourceRoot };
-        if (path === "worker") return { contents: 'export const WORKER_SOURCE = "/* Worker transport is controlled by the test */";' };
+        if (path === "worker") return { contents: 'export const WORKER_SOURCE = "/* Worker transport is controlled by the test */"; export const GLASS_WORKER_SOURCE = "/* Glass transport tested separately */";' };
         if (path === "./world") return { contents: `
           export class World {
             time = 0;
@@ -66,7 +66,7 @@ const bundle = await build({
 });
 const client = bundle.outputFiles[0].text;
 
-function browser({ worker = "ok", reducedMotion = false, focused = true, hidden = false } = {}) {
+function browser({ worker = "ok", reducedMotion = false, focused = true, hidden = false, imageCapture = false } = {}) {
   const intervals = new Map();
   const timeouts = new Map();
   const animationFrames = new Map();
@@ -77,6 +77,7 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
   const revokedUrls = [];
   let nextHandle = 1;
   let now = 0;
+  let workerConstructionBlocked = false;
 
   class Events {
     listeners = new Map();
@@ -165,6 +166,11 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
     toDataURL() { return "data:image/png;base64,stub"; }
   }
 
+  class Image extends Element {
+    constructor() { super("img"); }
+    decode() { return Promise.resolve(); }
+  }
+
   function find(node, predicate) {
     if (predicate(node)) return node;
     for (const child of node.children) {
@@ -227,7 +233,7 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
     onmessage = null;
     onerror = null;
     constructor(url) {
-      if (worker === "constructor-throws") throw new Error("Worker blocked by CSP");
+      if (worker === "constructor-throws" || workerConstructionBlocked) throw new Error("Worker blocked by CSP");
       this.url = url;
       workers.push(this);
     }
@@ -254,7 +260,8 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
   const globals = {
     window,
     document,
-    HTMLElement: Element,
+    HTMLElement: Element, HTMLCanvasElement: Canvas,
+    ...(imageCapture ? { Image } : {}),
     Worker,
     ResizeObserver,
     IntersectionObserver,
@@ -289,6 +296,7 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
     get surface() { return document.getElementById("dsh-ascii-ocean-surface"); },
     get canvas() { return document.getElementById("dsh-ascii-ocean-canvas"); },
     get capture() { return find(document.documentElement, (node) => node.classList.contains("dsh-liquid-capture")); },
+    blockWorkerConstruction() { workerConstructionBlocked = true; },
     resizeSidebar(width, height = 600) { layout.sidebar.rect = { width, height, left: 0, top: 0 }; this.ocean.ensure(); },
     replySnapshot(request, frames = 1) {
       const bitmap = { closed: false, close() { this.closed = true; } };
@@ -467,6 +475,34 @@ test("asynchronous Worker failure preserves pause and releases Worker resources"
   assert.equal(env.window.listenerCount(), 0);
   assert.equal(env.document.listenerCount(), 0);
   assert.equal(env.document.documentElement.listenerCount(), 0);
+});
+
+test("surface remount with synchronous Worker failure replaces the image pane and stops its glass Worker", (t) => {
+  const env = browser({ imageCapture: true });
+  t.after(() => env.unmount());
+  env.mount();
+  const previousCapture = env.capture;
+  const [oceanWorker, glassWorker] = env.workers;
+  assert.equal(previousCapture.tagName, "img");
+  assert.equal(previousCapture.isConnected, true);
+  assert.equal(env.workers.length, 2, "the image pane owns an independent glass Worker");
+
+  env.surface.remove();
+  env.blockWorkerConstruction();
+  env.tick(700);
+
+  assert.equal(oceanWorker.terminated, true);
+  assert.equal(glassWorker.terminated, true);
+  assert.equal(previousCapture.isConnected, false);
+  assert.equal(env.capture.tagName, "canvas");
+  assert.equal(env.canvas.transferred, false);
+  assert.equal(env.ocean.getSnapshot().fallback, true);
+  assert.deepEqual([...env.revokedUrls].sort(), [...env.createdUrls].sort(),
+    "both old Worker URLs and the failed replacement URL are released once");
+  env.frame();
+  env.tick(120);
+  assert.ok(env.canvas.renderCount > 0, "the local ocean continues rendering");
+  assert.ok(env.capture.draws.length > 0, "the replacement canvas receives local snapshots");
 });
 
 test("unmount terminates a live Worker and revokes its Blob URL exactly once", () => {

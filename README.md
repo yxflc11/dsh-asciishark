@@ -107,7 +107,7 @@ npm install
 npm run build
 ```
 
-开发时运行 `npm test`。回归覆盖安装失败回滚与精确 YAML 编辑、Worker 故障降级/资源清理、暂停及重挂载、60/120/144Hz 调度输入、静态缩放、交互控件过滤和快照回复。浏览器验收还需覆盖真实 Worker、模式持久化、主题、侧栏重建及 DSH 插件设置入口。
+开发时运行 `npm test`。回归覆盖安装失败回滚与精确 YAML 编辑、Worker 故障降级/资源清理、暂停及重挂载、60/120/144Hz 调度输入、静态缩放、交互控件过滤和快照回复，以及玻璃编码、解码、过期结果、Blob URL 清理和错误回退。浏览器验收还需覆盖真实 Worker、模式持久化、主题、侧栏重建及 DSH 插件设置入口。
 
 ## 卸载
 
@@ -130,16 +130,18 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-desktop.ps1
 目标：**默认保留60fps，同时把UI主线程让出来。界面提供30/60/120三档，游动速度保持独立。**
 
 - **海洋搬进 Web Worker**：模拟 + ASCII 绘制全部跑在 worker 里，通过 `OffscreenCanvas` 直接画到页面的 canvas 上（CSS 反相/渐晕仍在主线程合成）。主线程不再跑每一帧的物理与文字绘制。
-- **玻璃用低帧率快照**：主线程每 120ms 请求 worker 将侧栏区域缩成半分辨率位图传回，主线程对这张快照做 SVG 折射滤镜；滤镜重算约 8fps，而不是跟着海洋每帧跑。
+- **玻璃用低帧率快照**：每 120ms 请求海洋 worker 将侧栏区域缩成半分辨率位图，再由独立玻璃 worker 着色并编码为无损 PNG。主线程解码完成后替换图片，保留原 SVG、模糊、色彩和叠色参数；避免每次更新可变 canvas 时触发的合成等待。编码不占用海洋动画 worker。
 - **半分辨率滤镜 + transform 放大**：滤镜光栅面积降到 1/4（Retina 收益最大），因为本来就是模糊玻璃，观感几乎无差。
 - **无 backdrop-filter**：不再实时采样整页背景，少一次全屏模糊合成。
 - **DPR 上限 1.5**：Retina 下海洋画布像素减少约 44%。
 - **失焦/隐藏/静态暂停**：停止渲染循环和快照轮询；尺寸或主题变化触发一次必要更新。
-- **快照合并**：最多一个请求在途；尺寸变化使缓存失效，旧尺寸回复直接释放，新尺寸只补拍一次。
+- **快照合并**：位图传输、编码、解码全程最多一张在途；尺寸或主题变化会丢弃过期结果。旧图片在新图片解码后替换，随后释放 Blob URL；卸载会清理 worker 和全部 URL。不支持图片解码或 worker 出错时回退到原 canvas 路径。
 - **帧率调度**：Worker 和兼容引擎遵守所选 15–144fps 上限，非整除目标保留时间余量。60fps 及以下保留原固定运动步长；高刷档使用更细步长。高刷尾流仍按每秒60次更新，避免波纹随绘制频率变浓。
 - **滤镜 2 次位移**（R + GB 双通道，取代 3 次），保留色散边但开销更低。
 
 性能验证区分隔离浏览器和真实 DSH：受控调度测试用于核对帧率上限，不能代表真实高刷屏实测；历史 headless 主线程占用也不代表整机 CPU、GPU 或功耗。本版没有降低默认 60fps、鱼数量、DPR 上限、鲨鱼采样或玻璃滤镜。鲨鱼栅格化只在找到最近骨架段后计算一次距离与法线，消除重复计算，采样点和默认画面保持一致。
+
+0.13.2 在 macOS 真实 DSH 的同一长对话、239 条小鱼与 6 条鲨鱼、60fps 与玻璃开启条件下，用固定节奏上下滚动测试：新版三段的主线程 rAF 间隔 p95 为 32.3 / 32.9 / 17.7ms，超过 50ms 的间隔为 0 / 2 / 2 次；其间反向切回旧版为 83.3ms、62 次。海洋 worker 分别为 59.99 / 59.68 / 59.69fps，旧版为 59.98fps。此前旧版样本 p95 在 50–83.3ms 波动；这证明本机滚动卡顿显著减少，不代表聊天界面或所有设备始终呈现 60fps。
 
 精确采样使用 `await window.__dshAsciiOcean.getMetrics()` 的连续 `frames` 与 `time` 差值。该接口按需读取实际渲染器计数，不生成位图；旧 `frames` 属性来自玻璃快照，存在更新延迟，不用于测速。采样期间须保持窗口前台可见，模式、帧率和渲染器不变。Worker 绘制帧率不等于屏幕呈现帧率；60Hz 屏幕不能显示144个独立画面。
 
@@ -157,7 +159,7 @@ open preview/index.html
 npm run pack:tgz
 ```
 
-脚本会先创建 `dist/`，再生成 `dist/local-dsh-client-ui-ascii-ocean-0.13.1.tgz`，包含 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`。上游授权待确认期间，请勿再分发该包；打包成功不代表获得授权。
+脚本会先创建 `dist/`，再生成 `dist/local-dsh-client-ui-ascii-ocean-0.13.2.tgz`，包含 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`。上游授权待确认期间，请勿再分发该包；打包成功不代表获得授权。
 
 ## 目录
 
@@ -188,7 +190,7 @@ dsh-asciishark/
 - `apply(ctx)`：
   - 在 `body` 前置一层 `position: fixed; z-index: 0` 的全窗 canvas + 渐晕，`#root` 提到 `z-index: 1`；canvas 通过 `transferControlToOffscreen()` 交给 worker 渲染；
   - 把布局 frame 的背景清成透明，使海洋能透到 frame 后面的各栏；
-  - 定位 `[data-slot="sidebar"]` 与 `[data-slot="main"]` 的父元素（即左栏和对话栏）：左栏清空自身填充 + 挂 `dsh-liquid-glass` 类，类内是一块**半分辨率快照 canvas**（每 120ms 由 worker 传回侧栏区域画面），再对快照施加 `blur + SVG 位移折射` 滤镜和一层很淡的冷色玻璃色调；无圆角、无内缩、无光晕、无 1px 高光边；对话栏内联 `--dsw-alias-bg-base / layer-1/2/3 / module-platform` 保持半透明可读；两套值随主题实时切换；
+  - 定位 `[data-slot="sidebar"]` 与 `[data-slot="main"]` 的父元素（即左栏和对话栏）：左栏清空自身填充 + 挂 `dsh-liquid-glass` 类，类内是一张**半分辨率快照图片**（每 120ms 请求侧栏区域画面，独立 worker 编码 PNG；异常时回退 canvas），再对快照施加 `blur + SVG 位移折射` 滤镜和一层很淡的冷色玻璃色调；无圆角、无内缩、无光晕、无 1px 高光边；对话栏内联 `--dsw-alias-bg-base / layer-1/2/3 / module-platform` 保持半透明可读；两套值随主题实时切换；
   - 监听 `theme/change` 换挡 canvas 反相/正常模式与渐晕；
   - 每 0.7s 做一次轻量 `ensure()`：列元素被 React 重新挂载、布局切换或样式被重置时自动补挂；
   - 全部登记在 `ctx.effect` 作用域内，卸载时移除 canvas/样式/定时器，并逐项还原 frame 与两栏被改动的内联样式。
