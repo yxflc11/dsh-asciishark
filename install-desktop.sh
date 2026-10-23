@@ -1,39 +1,27 @@
 #!/usr/bin/env bash
-# Install the ASCII-ocean background into the DSH Desktop profile.
-# Idempotent: re-running replaces the package and leaves the patch row alone.
+# Run from the complete repository or installed package; no npm install needed.
 set -euo pipefail
-
-PKG_NAME="@local/dsh-client-ui-ascii-ocean"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE="${DSH_PROFILE_DIR:-$HOME/.dsh/profiles/desktop}"
-DEST="$PROFILE/node_modules/$PKG_NAME"
-PATCH="$PROFILE/cordis.patch.yml"
-
-if [ ! -f "$PATCH" ]; then
-  echo "error: $PATCH not found — is the DeepSeek Harness Desktop profile initialized?" >&2
+HELPER="$HERE/scripts/desktop.mjs"
+if [ ! -f "$HELPER" ] || [ ! -f "$HERE/scripts/vendor/yaml.mjs" ]; then
+  echo "error: installer support files are missing; use the complete repository/package. No files were changed." >&2
   exit 1
 fi
-
-# 1. Package first: the Loader must be able to import it the moment the row appears.
-mkdir -p "$(dirname "$DEST")"
-rm -rf "$DEST"
-mkdir -p "$DEST"
-cp -R "$HERE/lib" "$HERE/package.json" "$HERE/README.md" \
-  "$HERE/LICENSE" "$HERE/THIRD_PARTY_NOTICES.md" "$DEST/"
-
-# 2. Patch row: hot-reloaded by dsh-hmr, so the canvas appears without a restart.
-if ! grep -q 'id: ui-ascii-ocean' "$PATCH"; then
-  [ -n "$(tail -c 1 "$PATCH")" ] && printf '\n' >>"$PATCH"
-  cat >>"$PATCH" <<EOF
-
-- insert:
-    - id: ui-ascii-ocean
-      name: "$PKG_NAME"
-EOF
+CANDIDATES=()
+if [ -n "${DSH_NODE_BIN:-}" ]; then
+  CANDIDATES+=("$DSH_NODE_BIN")
+else
+  if command -v node >/dev/null 2>&1; then CANDIDATES+=("$(command -v node)"); fi
+  CANDIDATES+=(
+    "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node"
+    "$HOME/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node"
+  )
 fi
-
-echo "installed: $DEST"
-echo "patch row: ui-ascii-ocean -> $(grep -c 'id: ui-ascii-ocean' "$PATCH") occurrence(s)"
-echo "DSH hot-reloads the profile patch; no restart needed."
-echo "If the app window was already open and still shows an older build of the"
-echo "plugin, press Cmd+R once to reload the page (drafts are auto-saved)."
+for NODE_BIN in "${CANDIDATES[@]}"; do
+  if [ -x "$NODE_BIN" ] && "$NODE_BIN" -e 'process.exit(Number.parseInt(process.versions.node, 10) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+    exec "$NODE_BIN" "$HELPER" install "$PROFILE"
+  fi
+done
+echo "error: Node.js 18+ was not found. Install Node or set DSH_NODE_BIN to its executable. No files were changed." >&2
+exit 1

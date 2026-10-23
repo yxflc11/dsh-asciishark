@@ -14,6 +14,8 @@
  * The right docking column, menus, and dialogs stay opaque.
  */
 import { OceanEngine, type SharkSpec } from "./ascii-sharks";
+import { isInteractiveTarget } from "./ascii-sharks/engine";
+import { readPreferences, savePreferences, settingsComponent, PREFERENCES_KEY, type OceanMode } from "./preferences";
 import { WORKER_SOURCE } from "./worker-source.generated";
 
 const PACKAGE_NAME = "@local/dsh-client-ui-ascii-ocean";
@@ -87,6 +89,20 @@ const VEIL: Record<Scheme, string> = {
 const INK_FILTER = "invert(1) hue-rotate(180deg) saturate(1.8) contrast(1.35) brightness(0.96)";
 
 const CSS = `
+.dsh-ocean-settings { max-width: 720px; color: inherit; font: inherit; }
+.dsh-ocean-settings fieldset { border: 0; padding: 0; margin: 0 0 24px; min-width: 0; }
+.dsh-ocean-settings legend { font-weight: 600; margin-bottom: 12px; }
+.dsh-ocean-modes { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+.dsh-ocean-mode { display: flex; gap: 9px; align-items: flex-start; padding: 14px 12px; border: 1px solid #8885; border-radius: 12px; cursor: pointer; }
+.dsh-ocean-mode:has(:checked) { border-color: #4f7edb; background: rgba(100,150,240,.1); }
+.dsh-ocean-settings input { accent-color: #4279dc; flex: none; margin-top: 4px; }
+.dsh-ocean-settings input:focus-visible { outline: 2px solid #4279dc; outline-offset: 4px; }
+.dsh-ocean-settings strong { display: block; font-weight: 600; }
+.dsh-ocean-settings small { display: block; margin-top: 5px; font-size: 13px; line-height: 1.5; opacity: .75; }
+.dsh-ocean-reading { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
+.dsh-ocean-status { margin-top: 22px; font-size: 13px; line-height: 1.6; opacity: .75; }
+@media (max-width: 600px) { .dsh-ocean-modes { grid-template-columns: 1fr; } }
+
 #root {
   position: relative;
   z-index: 1;
@@ -174,6 +190,10 @@ interface OceanHandle {
   ensure(): boolean;
   setScheme(next: Scheme): void;
   toggle(): boolean;
+  setMode(mode: OceanMode): void;
+  setReadable(readable: boolean): void;
+  getSnapshot(): any;
+  subscribe(listener: () => void): () => void;
   destroy(): void;
 }
 
@@ -275,6 +295,9 @@ function buildFilterMarkup(mapUrl: string, scale: number, aberration: number): s
 
 function createOcean(ctx: any): OceanHandle {
   let scheme: Scheme = currentScheme(ctx);
+  let preferences = readPreferences();
+  let saved = true;
+  let fallback = false;
   let wrap: HTMLDivElement | null = null;
   let canvas: HTMLCanvasElement | null = null;
   let veil: HTMLDivElement | null = null;
@@ -283,47 +306,50 @@ function createOcean(ctx: any): OceanHandle {
   let workerUrl: string | null = null;
   let workerFrames = 0;
   let targets: Targets | null = null;
-  let hidden = false;
   let focused = document.hasFocus();
-  const shouldRun = () => !hidden && !document.hidden && focused;
+  let disposed = false;
+  let playing: boolean | null = null;
+  const motion = typeof matchMedia !== "undefined" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
+  const shouldRun = () => preferences.mode === "dynamic" && !motion?.matches && !document.hidden && focused;
+  const listeners = new Set<() => void>();
+  const snapshotState = () => ({ ...preferences, reduced: motion?.matches === true, saved, fallback });
+  let state = snapshotState();
+  const notify = () => { state = snapshotState(); for (const listener of listeners) listener(); };
   const savedProps = new Map<HTMLElement, Map<string, { value: string; priority: string }>>();
   const glassEls = new Set<HTMLElement>();
   let savedFrame: { el: HTMLElement; value: string; priority: string } | null = null;
-
-  // --- glass pane state -----------------------------------------------------
   let pane: HTMLDivElement | null = null;
   let capture: HTMLCanvasElement | null = null;
   let captureCtx: CanvasRenderingContext2D | null = null;
-  let lastCapturedFrame = -1;
-  let captureTimer = 0;
-  let tint: HTMLDivElement | null = null;
   let filterSvg: SVGSVGElement | null = null;
   let mapUrl = "";
   let mapSize = { width: 0, height: 0 };
+  let geometry = "";
+  let lastCapturedFrame = -1;
+  let captureDirty = true;
+  let captureRevision = 0;
+  let requestId = 0;
+  let inFlight: { id: number; revision: number } | null = null;
+  let captureTimer = 0;
+  const invalidateCapture = () => { captureRevision++; captureDirty = true; lastCapturedFrame = -1; };
+  const sidebarObserver = new ResizeObserver(() => {
+    if (disposed || preferences.mode === "off") return;
+    ensurePane();
+    requestSnapshot();
+  });
 
   const scope = (el: HTMLElement, tokens: Record<string, string>) => {
     let previous = savedProps.get(el);
-    if (!previous) {
-      previous = new Map();
-      savedProps.set(el, previous);
-    }
+    if (!previous) { previous = new Map(); savedProps.set(el, previous); }
     for (const [name, value] of Object.entries(tokens)) {
-      if (!previous.has(name)) {
-        previous.set(name, {
-          value: el.style.getPropertyValue(name),
-          priority: el.style.getPropertyPriority(name),
-        });
-      }
+      if (!previous.has(name)) previous.set(name, { value: el.style.getPropertyValue(name), priority: el.style.getPropertyPriority(name) });
       if (el.style.getPropertyValue(name) !== value) el.style.setProperty(name, value);
     }
   };
-
   const restoreScopes = () => {
-    for (const [el, previous] of savedProps) {
-      for (const [name, saved] of previous) {
-        if (saved.value) el.style.setProperty(name, saved.value, saved.priority);
-        else el.style.removeProperty(name);
-      }
+    for (const [el, previous] of savedProps) for (const [name, original] of previous) {
+      if (original.value) el.style.setProperty(name, original.value, original.priority);
+      else el.style.removeProperty(name);
     }
     savedProps.clear();
     if (savedFrame) {
@@ -331,439 +357,300 @@ function createOcean(ctx: any): OceanHandle {
       else savedFrame.el.style.removeProperty("background");
       savedFrame = null;
     }
-  };
-
-  const convValues = () => Object.fromEntries(Object.entries(CONVERSATION_TOKENS).map(([name, modes]) => [name, modes[scheme]]));
-  const sideValues = () => Object.fromEntries(Object.entries(SIDEBAR_TOKENS).map(([name, modes]) => [name, modes[scheme]]));
-
-  const applyScopes = (next: Targets) => {
-    scope(next.conversation, convValues());
-    scope(next.sidebar, sideValues());
-    if (!next.sidebar.classList.contains(GLASS_CLASS)) next.sidebar.classList.add(GLASS_CLASS);
-    const rail = next.sidebar.getBoundingClientRect().width < 140;
-    next.sidebar.classList.toggle("dsh-liquid-compact", rail);
-    glassEls.add(next.sidebar);
-    if (!savedFrame || savedFrame.el !== next.frame) {
-      savedFrame = {
-        el: next.frame,
-        value: next.frame.style.getPropertyValue("background"),
-        priority: next.frame.style.getPropertyPriority("background"),
-      };
+    for (const el of glassEls) {
+      el.classList.remove(GLASS_CLASS);
+      el.classList.remove("dsh-liquid-compact");
     }
+    glassEls.clear();
+  };
+  const quietPage = () => {
+    const id = ctx.layout?.panelInfo?.getSnapshot()?.activePanelId;
+    return id === "plugins" || id === "settings" || id === "automations" || id === "automation";
+  };
+  const applyScopes = (next: Targets) => {
+    if (preferences.mode === "off") return;
+    const values = Object.fromEntries(Object.entries(CONVERSATION_TOKENS).map(([name, modes]) => [name, modes[scheme]]));
+    if (preferences.readable) {
+      values["--dsw-alias-bg-base"] = quietPage()
+        ? (scheme === "light" ? "rgb(250, 251, 253)" : "rgb(15, 19, 25)")
+        : (scheme === "light" ? "rgba(255, 255, 255, 0.78)" : "rgba(9, 12, 17, 0.8)");
+      values["--dsw-alias-bg-layer-1"] = scheme === "light" ? "rgba(255, 255, 255, 0.92)" : "rgba(28, 32, 40, 0.94)";
+    }
+    scope(next.conversation, values);
+    scope(next.sidebar, Object.fromEntries(Object.entries(SIDEBAR_TOKENS).map(([name, modes]) => [name, modes[scheme]])));
+    next.sidebar.classList.add(GLASS_CLASS);
+    next.sidebar.classList.toggle("dsh-liquid-compact", next.sidebar.getBoundingClientRect().width < 140);
+    glassEls.add(next.sidebar);
+    if (!savedFrame) savedFrame = { el: next.frame, value: next.frame.style.getPropertyValue("background"), priority: next.frame.style.getPropertyPriority("background") };
     next.frame.style.setProperty("background", "transparent", "important");
   };
 
-  // --- liquid glass pane ----------------------------------------------------
-
+  const removePane = () => {
+    sidebarObserver.disconnect();
+    pane?.remove(); filterSvg?.remove();
+    pane = null; capture = null; captureCtx = null; filterSvg = null;
+    mapUrl = ""; mapSize = { width: 0, height: 0 }; geometry = "";
+    invalidateCapture();
+  };
   const rebuildFilter = () => {
     if (!mapUrl || !filterSvg) return;
     const tune = GLASS[scheme];
     filterSvg.innerHTML = `<defs>${buildFilterMarkup(mapUrl, tune.scale, tune.aberration)}</defs>`;
-    // A static-ish snapshot is filtered instead of the live page backdrop: the
-    // SVG filter then runs at the capture cadence, not on every ocean frame.
     if (capture) capture.style.filter = `${tune.blur} url(#${FILTER_ID})`;
-    lastCapturedFrame = -1;
+    invalidateCapture();
   };
-
   const ensurePane = () => {
     const side = targets?.sidebar;
-    if (!side) return;
-    const rect = side.getBoundingClientRect();
-    if (!pane || !pane.isConnected) {
-      pane = document.createElement("div");
-      pane.className = PANE_CLASS;
-      capture = document.createElement("canvas");
-      capture.className = CAPTURE_CLASS;
-      tint = document.createElement("div");
-      tint.className = TINT_CLASS;
-      pane.append(capture, tint);
-      side.prepend(pane);
+    if (!side || preferences.mode === "off") return;
+    if (!pane?.isConnected || pane.parentElement !== side) {
+      removePane();
+      pane = document.createElement("div"); pane.className = PANE_CLASS;
+      pane.setAttribute("aria-hidden", "true");
+      capture = document.createElement("canvas"); capture.className = CAPTURE_CLASS;
+      const tint = document.createElement("div"); tint.className = TINT_CLASS;
+      pane.append(capture, tint); side.prepend(pane);
       filterSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       filterSvg.setAttribute("id", FILTER_SVG_ID);
       filterSvg.setAttribute("aria-hidden", "true");
       filterSvg.setAttribute("style", "position:absolute;width:0;height:0;left:-9999px");
       document.body.append(filterSvg);
-      mapUrl = "";
-      mapSize = { width: 0, height: 0 };
+      sidebarObserver.observe(side);
     }
-    const halfW = Math.round(rect.width / 2);
-    const halfH = Math.round(rect.height / 2);
-    if (halfW > 30 && (Math.abs(halfW - mapSize.width) > 16 || Math.abs(halfH - mapSize.height) > 16)) {
+    const rect = side.getBoundingClientRect();
+    const key = [rect.left, rect.top, rect.width, rect.height, window.innerWidth, window.innerHeight, window.devicePixelRatio].join(":");
+    if (key !== geometry) { geometry = key; invalidateCapture(); }
+    const halfW = Math.round(rect.width / 2), halfH = Math.round(rect.height / 2);
+    if (halfW > 30 && (!mapUrl || Math.abs(halfW - mapSize.width) > 16 || Math.abs(halfH - mapSize.height) > 16)) {
       mapSize = { width: halfW, height: halfH };
       mapUrl = createDisplacementMap(halfW, halfH, 0);
       rebuildFilter();
-    } else if (capture && !capture.style.filter) {
-      rebuildFilter();
-    }
+    } else if (capture && !capture.style.filter) rebuildFilter();
   };
-
-  const removePane = () => {
-    pane?.remove();
-    pane = null;
-    capture = null;
-    captureCtx = null;
-    lastCapturedFrame = -1;
-    tint = null;
-    filterSvg?.remove();
-    filterSvg = null;
-    mapUrl = "";
-    mapSize = { width: 0, height: 0 };
-  };
-
-  // --- ocean surface --------------------------------------------------------
 
   const workerSize = () => {
     const rect = wrap?.getBoundingClientRect();
-    return {
-      width: Math.max(1, Math.round(rect?.width || window.innerWidth)),
-      height: Math.max(1, Math.round(rect?.height || window.innerHeight)),
-    };
+    return { width: Math.max(1, Math.round(rect?.width || window.innerWidth)), height: Math.max(1, Math.round(rect?.height || window.innerHeight)) };
   };
   const workerDpr = () => Math.min(window.devicePixelRatio || 1, 1.5);
   const post = (message: any) => worker?.postMessage(message);
-
   const stopWorker = () => {
     if (worker) {
-      worker.onmessage = null;
-      worker.onerror = null;
-      try { worker.postMessage({ type: "dispose" }); } catch { /* ignore */ }
-      worker.terminate();
-      worker = null;
+      worker.onmessage = null; worker.onerror = null;
+      try { worker.postMessage({ type: "dispose" }); } catch { /* already failed */ }
+      worker.terminate(); worker = null;
     }
     if (workerUrl) URL.revokeObjectURL(workerUrl);
-    workerUrl = null;
-    workerFrames = 0;
+    workerUrl = null; workerFrames = 0; inFlight = null; playing = null;
   };
-
   const restartCanvasForFallback = () => {
     if (!wrap || !canvas) return;
-    const next = document.createElement("canvas");
-    next.id = CANVAS_ID;
-    next.setAttribute("aria-hidden", "true");
-    canvas.replaceWith(next);
-    canvas = next;
-    lastCapturedFrame = -1;
+    const next = document.createElement("canvas"); next.id = CANVAS_ID; next.setAttribute("aria-hidden", "true");
+    canvas.replaceWith(next); canvas = next; invalidateCapture();
   };
-
   const startLocalEngine = () => {
     if (!canvas) return;
-    engine = new OceanEngine(canvas, SHARKS, { maxFps: 60, maxDpr: 1.5 });
+    fallback = true; notify();
+    engine = new OceanEngine(canvas, SHARKS, {
+      maxFps: 60, maxDpr: 1.5, paused: !shouldRun(), initialStatic: preferences.mode === "static",
+      onFrame: () => {
+        if (!shouldRun()) { invalidateCapture(); requestSnapshot(); }
+      },
+    });
     syncPlayback();
   };
-
   const startWorker = (): boolean => {
     if (!canvas) return false;
     try {
       const off = canvas.transferControlToOffscreen();
       workerUrl = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" }));
-      const next = new Worker(workerUrl);
-      worker = next;
+      const next = new Worker(workerUrl); worker = next;
       next.onmessage = (event: MessageEvent) => {
         const data = event.data as Record<string, any>;
-        if (data?.type === "snapshot" && data.bitmap) drawSnapshot(data.bitmap as ImageBitmap, data.frames as number);
+        if (data?.type !== "snapshot") return;
+        if (worker !== next || !inFlight || data.requestId !== inFlight.id) { data.bitmap?.close(); return; }
+        const revision = inFlight.revision; inFlight = null;
+        workerFrames = data.frames;
+        if (revision === captureRevision && preferences.mode !== "off" && !document.hidden) {
+          if (data.bitmap) drawSnapshot(data.bitmap, data.frames);
+          else if (data.skipped && data.reason === "unchanged") captureDirty = false;
+        } else data.bitmap?.close();
+        // Coalesce changes during transport; never queue a second request.
+        if (captureDirty && revision !== captureRevision) requestSnapshot();
       };
       next.onerror = () => {
         if (worker !== next) return;
-        // A worker failure is rare; rebuild the canvas and run the in-page engine.
-        stopWorker();
-        restartCanvasForFallback();
-        startLocalEngine();
+        stopWorker(); restartCanvasForFallback(); startLocalEngine(); requestSnapshot();
       };
-      const size = workerSize();
-      next.postMessage(
-        {
-          type: "init",
-          canvas: off,
-          width: size.width,
-          height: size.height,
-          dpr: workerDpr(),
-          maxFps: 60,
-          sharks: SHARKS,
-          fontFamily: getComputedStyle(canvas).fontFamily,
-          reducedMotion: typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches,
-          paused: !shouldRun(),
-        },
-        [off],
-      );
-      syncPlayback();
+      next.postMessage({ type: "init", canvas: off, ...workerSize(), dpr: workerDpr(), maxFps: 60, sharks: SHARKS,
+        fontFamily: getComputedStyle(canvas).fontFamily, reducedMotion: motion?.matches === true,
+        paused: !shouldRun(), initialStatic: preferences.mode === "static" }, [off]);
+      fallback = false; notify(); syncPlayback();
       return true;
     } catch {
-      stopWorker();
-      // The canvas may already be transferred even when Worker construction fails.
-      restartCanvasForFallback();
-      return false;
+      stopWorker(); restartCanvasForFallback(); return false;
     }
   };
 
-  // --- glass snapshot -------------------------------------------------------
-
+  const captureContext = (cw: number, ch: number) => {
+    if (!capture) return null;
+    if (capture.width !== cw || capture.height !== ch) {
+      capture.width = cw; capture.height = ch; captureCtx = null;
+    }
+    if (!captureCtx || captureCtx.canvas !== capture) captureCtx = capture.getContext("2d");
+    return captureCtx;
+  };
   const drawSnapshot = (bitmap: ImageBitmap, frames: number) => {
-    workerFrames = frames;
-    if (!capture || !pane?.isConnected) {
-      bitmap.close();
-      return;
-    }
-    const side = targets?.sidebar;
-    if (!side) {
-      bitmap.close();
-      return;
-    }
-    const rect = side.getBoundingClientRect();
-    const cw = Math.max(16, Math.round(rect.width / 2));
-    const ch = Math.max(16, Math.round(rect.height / 2));
-    if (capture.width !== cw || capture.height !== ch) {
-      capture.width = cw;
-      capture.height = ch;
-      captureCtx = capture.getContext("2d");
-    }
-    const ctx2d = captureCtx ?? capture.getContext("2d");
-    if (!ctx2d) {
-      bitmap.close();
-      return;
-    }
-    captureCtx = ctx2d;
-    ctx2d.save();
-    ctx2d.filter =
-      scheme === "light"
-        ? "invert(1) hue-rotate(180deg) saturate(1.8) contrast(1.35) brightness(0.96)"
-        : "none";
-    ctx2d.drawImage(bitmap, 0, 0, cw, ch);
-    ctx2d.restore();
-    bitmap.close();
-    lastCapturedFrame = frames;
+    try {
+      if (!capture || !pane?.isConnected || !targets) return;
+      const rect = targets.sidebar.getBoundingClientRect();
+      const cw = Math.max(16, Math.round(rect.width / 2)), ch = Math.max(16, Math.round(rect.height / 2));
+      const context = captureContext(cw, ch);
+      if (!context) return;
+      context.save(); context.filter = scheme === "light" ? INK_FILTER : "none";
+      context.drawImage(bitmap, 0, 0, cw, ch); context.restore();
+      lastCapturedFrame = frames; captureDirty = false;
+    } finally { bitmap.close(); }
   };
-
-  /** Fallback capture: read the in-page canvas directly. */
   const captureBackdropLocal = () => {
-    if (worker || !capture || !canvas || !pane?.isConnected || document.hidden) return;
-    const source = canvas;
+    if (!capture || !canvas || !pane?.isConnected || !targets) return;
     const frames = engine?.frames ?? 0;
-    if (frames === lastCapturedFrame) return;
-    const side = targets?.sidebar;
-    if (!side) return;
-    const rect = side.getBoundingClientRect();
-    if (rect.width < 4 || rect.height < 4 || source.width < 4 || source.height < 4) return;
-    const cw = Math.max(16, Math.round(rect.width / 2));
-    const ch = Math.max(16, Math.round(rect.height / 2));
-    if (capture.width !== cw || capture.height !== ch) {
-      capture.width = cw;
-      capture.height = ch;
-      captureCtx = capture.getContext("2d");
-      lastCapturedFrame = -1;
-    }
-    const ctx2d = captureCtx ?? capture.getContext("2d");
-    if (!ctx2d) return;
-    captureCtx = ctx2d;
-    const sx = (rect.left / Math.max(1, window.innerWidth)) * source.width;
-    const sy = (rect.top / Math.max(1, window.innerHeight)) * source.height;
-    const sw = (rect.width / Math.max(1, window.innerWidth)) * source.width;
-    const sh = (rect.height / Math.max(1, window.innerHeight)) * source.height;
-    ctx2d.save();
-    ctx2d.filter =
-      scheme === "light"
-        ? "invert(1) hue-rotate(180deg) saturate(1.8) contrast(1.35) brightness(0.96)"
-        : "none";
-    ctx2d.drawImage(source, sx, sy, sw, sh, 0, 0, cw, ch);
-    ctx2d.restore();
-    lastCapturedFrame = frames;
+    if (!captureDirty && frames === lastCapturedFrame) return;
+    const rect = targets.sidebar.getBoundingClientRect();
+    if (rect.width < 4 || rect.height < 4 || canvas.width < 4 || canvas.height < 4) return;
+    const cw = Math.max(16, Math.round(rect.width / 2)), ch = Math.max(16, Math.round(rect.height / 2));
+    const context = captureContext(cw, ch);
+    if (!context) return;
+    const sourceRect = canvas.getBoundingClientRect();
+    const rx = canvas.width / Math.max(1, sourceRect.width), ry = canvas.height / Math.max(1, sourceRect.height);
+    context.save(); context.filter = scheme === "light" ? INK_FILTER : "none";
+    context.drawImage(canvas, (rect.left - sourceRect.left) * rx, (rect.top - sourceRect.top) * ry,
+      rect.width * rx, rect.height * ry, 0, 0, cw, ch);
+    context.restore(); lastCapturedFrame = frames; captureDirty = false;
   };
-
   const requestSnapshot = () => {
-    if (!capture || !pane?.isConnected || document.hidden) return;
-    const side = targets?.sidebar;
-    if (!side) return;
+    if (disposed || preferences.mode === "off" || !capture || !pane?.isConnected || document.hidden || !targets) return;
+    if (!shouldRun() && !captureDirty) return;
     if (worker) {
-      const rect = side.getBoundingClientRect();
-      post({
-        type: "snapshot",
-        rect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
-        cw: Math.max(16, Math.round(rect.width / 2)),
-        ch: Math.max(16, Math.round(rect.height / 2)),
-        since: lastCapturedFrame,
-      });
-    } else {
-      captureBackdropLocal();
-    }
+      if (inFlight) return;
+      const rect = targets.sidebar.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) return;
+      inFlight = { id: ++requestId, revision: captureRevision };
+      post({ type: "snapshot", requestId, force: captureDirty, rect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+        cw: Math.max(16, Math.round(rect.width / 2)), ch: Math.max(16, Math.round(rect.height / 2)), since: lastCapturedFrame });
+    } else captureBackdropLocal();
   };
-
-  // Snapshot cadence: the SVG glass filter re-runs only when a bitmap lands.
-  captureTimer = window.setInterval(requestSnapshot, 120);
-
-  // --- input / lifecycle ----------------------------------------------------
+  const syncPlayback = () => {
+    const running = shouldRun();
+    if (running !== playing) {
+      playing = running;
+      post({ type: running ? "resume" : "pause" });
+      if (running) engine?.resume(); else engine?.pause();
+    }
+    if (running && !captureTimer) captureTimer = window.setInterval(requestSnapshot, 120);
+    else if (!running && captureTimer) { clearInterval(captureTimer); captureTimer = 0; }
+    // One final snapshot on pause; no periodic messages in a static/hidden tab.
+    invalidateCapture(); requestSnapshot();
+  };
 
   let lastPointerPost = 0;
   const onPointerMove = (event: PointerEvent) => {
-    const now = performance.now();
-    if (now - lastPointerPost < 50) return;
+    if (!shouldRun()) return;
+    const now = performance.now(); if (now - lastPointerPost < 50) return;
     lastPointerPost = now;
-    post({ type: "pointer", x: event.clientX, y: event.clientY, active: true });
+    post({ type: "pointer", x: event.clientX, y: event.clientY, active: event.pointerType !== "touch" && !isInteractiveTarget(event) });
   };
   const onPointerDown = (event: PointerEvent) => {
-    if (typeof matchMedia === "undefined" || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (!shouldRun() || (event.button !== undefined && event.button !== 0) || isInteractiveTarget(event)) return;
     post({ type: "splash", x: event.clientX, y: event.clientY });
   };
   const onPointerLeave = () => post({ type: "pointer", x: 0, y: 0, active: false });
-
-  const pauseOcean = () => {
-    post({ type: "pause" });
-    engine?.pause();
-  };
-  const resumeOcean = () => {
-    post({ type: "resume" });
-    engine?.resume();
-  };
-  const syncPlayback = () => {
-    if (shouldRun()) resumeOcean();
-    else pauseOcean();
-  };
-  const onWindowBlur = () => {
-    focused = false;
-    syncPlayback();
-  };
-  const onWindowFocus = () => {
-    focused = true;
-    syncPlayback();
-  };
-  const onVisibility = () => {
-    focused = document.hasFocus();
-    syncPlayback();
-  };
+  const onWindowBlur = () => { focused = false; onPointerLeave(); syncPlayback(); };
+  const onWindowFocus = () => { focused = true; syncPlayback(); };
+  const onVisibility = () => { focused = document.hasFocus(); syncPlayback(); };
   const onWindowResize = () => {
-    const size = workerSize();
-    post({ type: "resize", width: size.width, height: size.height, dpr: workerDpr() });
+    post({ type: "resize", ...workerSize(), dpr: workerDpr() });
+    invalidateCapture(); ensurePane(); requestSnapshot();
   };
-  const motion =
-    typeof matchMedia !== "undefined" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
-  const onMotionPreference = () => post({ type: "reduce", reducedMotion: motion?.matches === true });
-
+  const onMotionPreference = () => {
+    post({ type: "reduce", reducedMotion: motion?.matches === true }); syncPlayback(); notify();
+  };
   window.addEventListener("pointermove", onPointerMove, { passive: true });
   window.addEventListener("pointerdown", onPointerDown, { passive: true });
   document.documentElement.addEventListener("pointerleave", onPointerLeave);
-  window.addEventListener("blur", onWindowBlur);
-  window.addEventListener("focus", onWindowFocus);
+  window.addEventListener("blur", onWindowBlur); window.addEventListener("focus", onWindowFocus);
   window.addEventListener("resize", onWindowResize);
   document.addEventListener("visibilitychange", onVisibility);
   motion?.addEventListener("change", onMotionPreference);
 
   const mountSurface = () => {
     if (wrap?.isConnected) return;
-    // A host remount can detach the surface before ensure() runs.
-    engine?.destroy();
-    engine = null;
-    stopWorker();
-    lastCapturedFrame = -1;
-    wrap = document.createElement("div");
-    wrap.id = SURFACE_ID;
-    wrap.dataset.scheme = scheme;
-    if (hidden) wrap.style.display = "none";
-    canvas = document.createElement("canvas");
-    canvas.id = CANVAS_ID;
-    canvas.setAttribute("aria-hidden", "true");
-    veil = document.createElement("div");
-    veil.id = VEIL_ID;
-    veil.style.background = VEIL[scheme];
-    wrap.append(canvas, veil);
-    (document.body ?? document.documentElement).prepend(wrap);
+    engine?.destroy(); engine = null; stopWorker(); invalidateCapture();
+    wrap = document.createElement("div"); wrap.id = SURFACE_ID; wrap.dataset.scheme = scheme;
+    wrap.setAttribute("aria-hidden", "true");
+    wrap.style.display = preferences.mode === "off" ? "none" : "";
+    canvas = document.createElement("canvas"); canvas.id = CANVAS_ID; canvas.setAttribute("aria-hidden", "true");
+    veil = document.createElement("div"); veil.id = VEIL_ID; veil.style.background = VEIL[scheme];
+    wrap.append(canvas, veil); (document.body ?? document.documentElement).prepend(wrap);
     if (!startWorker()) startLocalEngine();
   };
-
   const mount = (): boolean => {
-    if (!document.body) return false;
-    const next = findTargets();
-    if (!next) return false;
+    if (disposed || !document.body) return false;
+    const next = findTargets(); if (!next) return false;
     if (targets?.conversation !== next.conversation || targets?.sidebar !== next.sidebar || targets?.frame !== next.frame) {
-      if (targets) restoreScopes();
-      targets = next;
+      removePane(); restoreScopes(); targets = next;
     }
-    mountSurface();
-    applyScopes(targets);
-    ensurePane();
+    mountSurface(); applyScopes(next); ensurePane(); requestSnapshot();
     return true;
   };
-
-  const clear = (restore: boolean) => {
-    engine?.destroy();
-    engine = null;
-    stopWorker();
-    workerFrames = 0;
-    lastCapturedFrame = -1;
-    wrap?.remove();
-    wrap = null;
-    canvas = null;
-    veil = null;
-    removePane();
-    for (const el of glassEls) {
-      el.classList.remove(GLASS_CLASS);
-      el.classList.remove("dsh-liquid-compact");
-    }
-    glassEls.clear();
-    if (restore) {
-      restoreScopes();
-      targets = null;
-    }
-  };
-
   const setScheme = (next: Scheme) => {
     if (next === scheme) return;
     scheme = next;
     if (wrap) wrap.dataset.scheme = scheme;
     if (veil) veil.style.background = VEIL[scheme];
-    if (targets) {
-      applyScopes(targets);
-      rebuildFilter();
-      lastCapturedFrame = -1;
-    }
+    if (targets) { applyScopes(targets); rebuildFilter(); invalidateCapture(); requestSnapshot(); }
   };
-
-  const ensure = () => {
-    const s = currentScheme(ctx);
-    if (s !== scheme) setScheme(s);
-    if (!wrap?.isConnected) return mount();
-    const next = findTargets();
-    if (!next) return false;
-    const moved = next.conversation !== targets?.conversation || next.sidebar !== targets?.sidebar || next.frame !== targets?.frame;
-    if (moved) {
-      clear(false);
-      restoreScopes();
-      targets = null;
-      return mount();
-    }
-    applyScopes(next);
-    ensurePane();
-    return true;
+  const ensure = () => { setScheme(currentScheme(ctx)); return mount(); };
+  const applyPreferences = () => {
+    if (wrap) wrap.style.display = preferences.mode === "off" ? "none" : "";
+    if (preferences.mode === "off") { removePane(); restoreScopes(); }
+    else if (targets) { applyScopes(targets); ensurePane(); }
+    syncPlayback(); notify();
   };
+  const setMode = (mode: OceanMode) => {
+    if (!["dynamic", "static", "off"].includes(mode)) return;
+    preferences = { ...preferences, mode }; saved = savePreferences(preferences); applyPreferences();
+  };
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== PREFERENCES_KEY && event.key !== null) return;
+    preferences = readPreferences(); saved = true; applyPreferences();
+  };
+  window.addEventListener("storage", onStorage);
+  const offPanel = ctx.layout?.panelInfo?.subscribe(() => { if (targets) applyScopes(targets); });
 
   return {
-    get mounted() {
-      return wrap?.isConnected === true;
-    },
-    get frames() {
-      return worker ? workerFrames : (engine?.frames ?? 0);
-    },
-    mount,
-    ensure,
-    setScheme,
-    toggle() {
-      hidden = !hidden;
-      if (wrap) wrap.style.display = hidden ? "none" : "";
-      syncPlayback();
-      return !hidden;
-    },
+    get mounted() { return wrap?.isConnected === true; },
+    get frames() { return worker ? workerFrames : (engine?.frames ?? 0); },
+    getSnapshot: () => state,
+    subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
+    setMode,
+    setReadable(readable: boolean) { preferences = { ...preferences, readable }; saved = savePreferences(preferences); applyPreferences(); },
+    mount, ensure, setScheme,
+    toggle() { const enabled = preferences.mode === "off"; setMode(enabled ? "dynamic" : "off"); return enabled; },
     destroy() {
-      clearInterval(captureTimer);
-      captureTimer = 0;
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerdown", onPointerDown);
+      disposed = true; clearInterval(captureTimer); captureTimer = 0;
+      window.removeEventListener("pointermove", onPointerMove); window.removeEventListener("pointerdown", onPointerDown);
       document.documentElement.removeEventListener("pointerleave", onPointerLeave);
-      window.removeEventListener("blur", onWindowBlur);
-      window.removeEventListener("focus", onWindowFocus);
-      window.removeEventListener("resize", onWindowResize);
-      document.removeEventListener("visibilitychange", onVisibility);
-      motion?.removeEventListener("change", onMotionPreference);
-      clear(true);
+      window.removeEventListener("blur", onWindowBlur); window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("resize", onWindowResize); window.removeEventListener("storage", onStorage);
+      document.removeEventListener("visibilitychange", onVisibility); motion?.removeEventListener("change", onMotionPreference);
+      offPanel?.(); engine?.destroy(); engine = null; stopWorker();
+      wrap?.remove(); wrap = null; canvas = null; veil = null;
+      removePane(); restoreScopes(); targets = null; listeners.clear();
     },
   };
 }
+
+let hostReact: any;
 
 /** Client plugin body: mount the ocean and the liquid-glass sidebar. */
 function apply(ctx: any) {
@@ -775,6 +662,9 @@ function apply(ctx: any) {
 
     const ocean = createOcean(ctx);
     ocean.mount();
+    const offSettings = ctx.slots?.inject("plugins.item", () => ctx.slots.register({
+      name: "plugins.item", id: "ascii-ocean", order: 50, label: "海洋背景",
+    }, settingsComponent(hostReact, ocean)));
 
     const timer = setInterval(() => ocean.ensure(), 700);
     const offTheme = ctx.on("theme/change", () => ocean.setScheme(currentScheme(ctx)));
@@ -785,21 +675,23 @@ function apply(ctx: any) {
       delete (window as any).__dshAsciiOcean;
       clearInterval(timer);
       offTheme?.();
+      offSettings?.();
       ocean.destroy();
       style.remove();
     };
   }, "ascii-ocean: ocean + liquid glass sidebar");
 }
 
-(globalThis as any).__dshAsciiOceanPlugin = { apply, inject: ["theme"] };
+(globalThis as any).__dshAsciiOceanPlugin = { apply, inject: ["theme", "slots", "layout"] };
 
 (window as any).__ModuleLoader__.load({
   id: PACKAGE_NAME,
   factory: (require: any) => {
     const module = { exports: {} as any };
     const exports = module.exports;
+    hostReact = require("react");
     exports.apply = apply;
-    exports.inject = ["theme"];
+    exports.inject = ["theme", "slots", "layout"];
     return module.exports;
   },
 });

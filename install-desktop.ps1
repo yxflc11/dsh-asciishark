@@ -1,42 +1,34 @@
-# Install the ASCII-ocean background into the DSH Desktop profile (Windows).
-#
-# Usage:
-#   powershell -ExecutionPolicy Bypass -File .\install-desktop.ps1
-#
-# Set DSH_PROFILE_DIR to install into a different profile directory.
+# Run from the complete repository or installed package; no npm install needed.
 $ErrorActionPreference = "Stop"
-
-$PkgName = "@local/dsh-client-ui-ascii-ocean"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProfileDir = if ($env:DSH_PROFILE_DIR) { $env:DSH_PROFILE_DIR } else { Join-Path $env:USERPROFILE ".dsh\profiles\desktop" }
-$Patch = Join-Path $ProfileDir "cordis.patch.yml"
-$Dest = Join-Path $ProfileDir "node_modules\@local\dsh-client-ui-ascii-ocean"
-
-if (-not (Test-Path $Patch)) {
-  throw "error: $Patch not found - is the DeepSeek Harness Desktop profile initialized?"
+$Helper = Join-Path $Here "scripts\desktop.mjs"
+if (-not (Test-Path -LiteralPath $Helper -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $Here "scripts\vendor\yaml.mjs") -PathType Leaf)) {
+  throw "Installer support files are missing; use the complete repository/package. No files were changed."
 }
-
-# 1. Package first: the Loader must be able to import it the moment the row appears.
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Dest) | Out-Null
-if (Test-Path $Dest) { Remove-Item -Recurse -Force $Dest }
-New-Item -ItemType Directory -Force -Path $Dest | Out-Null
-Copy-Item -Recurse -Force (Join-Path $Here "lib") $Dest
-Copy-Item -Force (Join-Path $Here "package.json") $Dest
-Copy-Item -Force (Join-Path $Here "README.md") $Dest
-Copy-Item -Force (Join-Path $Here "LICENSE") $Dest
-Copy-Item -Force (Join-Path $Here "THIRD_PARTY_NOTICES.md") $Dest
-
-# 2. Patch row: hot-reloaded by dsh-hmr, so the canvas appears without a restart.
-$Content = Get-Content -Raw -Path $Patch
-if ($Content -notmatch "id:\s*ui-ascii-ocean") {
-  $Snippet = "`r`n- insert:`r`n    - id: ui-ascii-ocean`r`n      name: `"$PkgName`"`r`n"
-  $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::AppendAllText($Patch, $Snippet, $Utf8NoBom)
+$Candidates = @()
+if ($env:DSH_NODE_BIN) {
+  $Candidates += $env:DSH_NODE_BIN
+} else {
+  $NodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($NodeCommand) { $Candidates += $NodeCommand.Source }
+  # Best-effort paths for Desktop installations; system Node remains supported.
+  foreach ($Root in @($env:LOCALAPPDATA, $env:ProgramFiles)) {
+    if ($Root) {
+      foreach ($AppDir in @("Programs\DeepSeek Harness", "DeepSeek Harness")) {
+        foreach ($NodeRelative in @("resources\runtime\primary-runtime\dependencies\node\node.exe", "resources\runtime\primary-runtime\dependencies\node\bin\node.exe")) {
+          $Candidates += Join-Path (Join-Path $Root $AppDir) $NodeRelative
+        }
+      }
+    }
+  }
 }
-
-Write-Host "installed: $Dest"
-$Count = (Select-String -Path $Patch -Pattern "id: ui-ascii-ocean" -AllMatches).Matches.Count
-Write-Host "patch row: ui-ascii-ocean -> $Count occurrence(s)"
-Write-Host "DSH hot-reloads the profile patch; no restart needed."
-Write-Host "If the app window was already open and still shows an older build of the"
-Write-Host "plugin, press Ctrl+R once to reload the page (drafts are auto-saved)."
+foreach ($NodeBin in $Candidates) {
+  if (-not (Test-Path -LiteralPath $NodeBin -PathType Leaf)) { continue }
+  & $NodeBin -e 'process.exit(Number.parseInt(process.versions.node, 10) >= 18 ? 0 : 1)' 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    & $NodeBin $Helper install $ProfileDir
+    exit $LASTEXITCODE
+  }
+}
+throw "Node.js 18+ was not found. Install Node or set DSH_NODE_BIN to its executable. No files were changed."
