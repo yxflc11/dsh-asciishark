@@ -142,6 +142,7 @@ export class OceanEngine {
       for (let i = 0; i < 240; i++) this.world.step(STEP);
     }
     this.renderer.render(this.world, STEP);
+    this.frames++;
   }
 
   private onMotionPreference = () => {

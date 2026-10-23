@@ -135,8 +135,6 @@
       this.sharkSpecs = sharkSpecs;
       this.fishCount = fishCount;
     }
-    sharkSpecs;
-    fishCount;
     width = 0;
     height = 0;
     time = 0;
@@ -857,7 +855,6 @@
         }
       }
     }
-    canvas;
     ctx;
     bg;
     dpr = 1;
@@ -1447,7 +1444,6 @@
       });
       this.schedule();
     }
-    canvas;
     world;
     renderer;
     raf = 0;
@@ -1538,6 +1534,7 @@
         for (let i = 0; i < 240; i++) this.world.step(STEP);
       }
       this.renderer.render(this.world, STEP);
+      this.frames++;
     }
     onMotionPreference = () => {
       if (this.reducedMotion.matches) {

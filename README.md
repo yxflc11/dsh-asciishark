@@ -83,6 +83,8 @@ npm install
 npm run build
 ```
 
+开发时可运行 `npm test`。回归测试覆盖 Worker 启动失败后的降级与资源清理、隐藏/焦点/可见性变化及重挂载时的暂停状态，以及减少动态效果模式下窗口缩放后的侧栏截图刷新。
+
 ## 卸载
 
 macOS / Linux：
