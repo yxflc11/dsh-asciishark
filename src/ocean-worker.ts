@@ -13,9 +13,11 @@
  *   pointer  { x, y, active }
  *   splash   { x, y }
  *   snapshot { requestId, rect: {x,y,w,h}, cw, ch, since, force? }
+ *   metrics  { requestId }
  *   dispose
  * Worker → main:
  *   snapshot { requestId, bitmap?, frames, skipped?, reason? }
+ *   metrics  { requestId, frames, time, running, width, height, dpr, fishCount, sharkCount, maxFps, simulationTime }
  */
 import { AsciiRenderer } from "./ascii-sharks/renderer";
 import { World, type SharkSpec } from "./ascii-sharks/world";
@@ -76,14 +78,17 @@ function frame() {
   last = now;
   acc += dt;
   let steps = 0;
-  const maxSteps = Math.max(MAX_STEPS, Math.ceil(speed / maxFps / STEP) + 1);
-  while (acc + 1e-10 >= STEP && steps < maxSteps) {
-    world.step(STEP);
-    acc = Math.max(0, acc - STEP);
+  // Ordinary caps retain the original 60 Hz trajectory; high-refresh frames
+  // advance the world in finer steps, with the same bounded catch-up time.
+  const step = 1 / Math.max(60, maxFps);
+  const maxSteps = Math.max(Math.ceil(MAX_STEPS * STEP / step), Math.ceil(speed / maxFps / step) + 1);
+  while (acc + 1e-10 >= step && steps < maxSteps) {
+    world.step(step);
+    acc = Math.max(0, acc - step);
     steps++;
   }
-  if (steps === maxSteps && acc >= STEP) acc %= STEP;
-  renderer.render(world, dt);
+  if (steps === maxSteps && acc >= step) acc %= step;
+  renderer.render(world, dt, maxFps > 60 ? speed / 60 : undefined);
   frames++;
   const wait = Math.max(0, nextDraw - performance.now());
   timer = setTimeout(frame, wait);
@@ -152,7 +157,7 @@ self.onmessage = (event: MessageEvent) => {
   switch (data?.type) {
     case "init": {
       makeRenderer(data.canvas as OffscreenCanvas, data.fontFamily ?? "", data.sharks as SharkSpec[] | undefined, data.fishCount);
-      maxFps = finiteRange(data.maxFps, 5, 60, 60);
+      maxFps = finiteRange(data.maxFps, 5, 144, 60);
       speed = finiteRange(data.speed, 0.25, 2, 1);
       interactive = data.interactive !== false;
       reduced = data.reducedMotion === true;
@@ -166,7 +171,7 @@ self.onmessage = (event: MessageEvent) => {
       resize(data.width, data.height, data.dpr ?? dpr);
       break;
     case "fps":
-      maxFps = finiteRange(data.fps, 5, 60, maxFps);
+      maxFps = finiteRange(data.fps, 5, 144, maxFps);
       schedule();
       break;
     case "configure":
@@ -210,6 +215,14 @@ self.onmessage = (event: MessageEvent) => {
       break;
     case "snapshot":
       replySnapshot(data.requestId, data.rect, data.cw, data.ch, data.since ?? -1, data.force === true);
+      break;
+    case "metrics":
+      self.postMessage({
+        type: "metrics", requestId: data.requestId, frames, time: performance.now(),
+        running: !paused && !reduced && !disposed && renderer !== null,
+        width, height, dpr, fishCount: world?.fish.length ?? 0, sharkCount: world?.sharks.length ?? 0,
+        maxFps, simulationTime: world?.time ?? 0,
+      });
       break;
     case "dispose":
       disposed = true;

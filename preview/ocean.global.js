@@ -129,6 +129,7 @@
   var FISH_COHESION_K = 1;
   var FISH_FLEE_K = 1100;
   var BLIND_COS = -0.6;
+  var REFERENCE_STEP = 1 / 60;
   var SHARK_KINDS = /* @__PURE__ */ new Set(["classic", "hammerhead", "zebra", "tiger", "greathammer", "mako", "thresher", "nurse"]);
   function validSharks(specs) {
     return specs.filter((spec) => spec && SHARK_KINDS.has(spec.kind) && Number.isFinite(spec.size) && spec.size > 0).slice(0, 12).map(({ kind, size }) => ({ kind, size: clamp(size, 0.1, 2) }));
@@ -310,8 +311,9 @@
     step(dt) {
       this.time += dt;
       this.rebuildHash();
-      this.stepFish(dt);
-      this.stepSharks(dt);
+      const noiseScale = dt > 0 && Number.isFinite(dt) && dt !== REFERENCE_STEP ? Math.sqrt(REFERENCE_STEP / dt) : 1;
+      this.stepFish(dt, noiseScale);
+      this.stepSharks(dt, noiseScale);
       this.respawn();
     }
     rebuildHash() {
@@ -344,7 +346,7 @@
       const r = clamp(Math.floor(y / size) + 2, 0, this.bucketRows - 1);
       return r * this.bucketCols + c;
     }
-    stepFish(dt) {
+    stepFish(dt, noiseScale) {
       const { fish, sharks, pointer, width: W, height: H, time } = this;
       const R = this.perception;
       const R2 = R * R;
@@ -483,8 +485,8 @@
         if (f.y < m) ay += (m - f.y) * 7;
         else if (f.y > H - m) ay -= (f.y - (H - m)) * 7;
         current(f.x, f.y, time, cur);
-        ax += cur.x * 0.5 + (Math.random() - 0.5) * sp.jitter;
-        ay += cur.y * 0.5 + (Math.random() - 0.5) * sp.jitter;
+        ax += cur.x * 0.5 + (Math.random() - 0.5) * sp.jitter * noiseScale;
+        ay += cur.y * 0.5 + (Math.random() - 0.5) * sp.jitter * noiseScale;
         ay -= f.vy * sp.verticalDrag * (1 - 0.7 * f.alarm);
         const preferred = sp.cruise * (1 + 1.3 * f.alarm);
         ax += (preferred - speed) * hx * 1.6;
@@ -507,7 +509,7 @@
         f.y = clamp(f.y + f.vy * dt, -60, H + 60);
       }
     }
-    stepSharks(dt) {
+    stepSharks(dt, noiseScale) {
       const { sharks, width: W, height: H, time } = this;
       const minSide = Math.min(W, H);
       const cxW = W / 2;
@@ -520,7 +522,7 @@
         sh.hunger = Math.min(1, sh.hunger + dt * 0.03);
         let dx = Math.cos(sh.heading);
         let dy = Math.sin(sh.heading);
-        sh.wander = clamp(sh.wander + (Math.random() - 0.5) * dt * 3.2, -1.1, 1.1);
+        sh.wander = clamp(sh.wander + (Math.random() - 0.5) * dt * 3.2 * noiseScale, -1.1, 1.1);
         dx += Math.cos(sh.heading + sh.wander) * 0.45;
         dy += Math.sin(sh.heading + sh.wander) * 0.45;
         if (time >= sh.retargetAt) {
@@ -953,6 +955,9 @@
     /** Fish cells bucketed by brightness, so each bucket is one fillStyle. */
     fishBuckets = FISH_ALPHAS.map(() => []);
     fishStyles = FISH_ALPHAS.map((a) => `rgba(230,238,255,${a})`);
+    /** High-refresh frames share the original 60 Hz wake cadence. */
+    fieldStep = 0;
+    fieldAcc = 0;
     get cellWidth() {
       return this.cw;
     }
@@ -963,6 +968,7 @@
       if (family) this.fontFamily = family;
     }
     resize(width, height, dpr) {
+      this.fieldAcc = 0;
       this.width = width;
       this.height = height;
       this.dpr = dpr;
@@ -1008,14 +1014,29 @@
       g.fillRect(0, 0, W, H);
       paintGrid(g, W, H, cw, ch, dpr);
     }
-    render(world, dt) {
+    /** fieldStep is speed / 60 above 60 fps; omit it for legacy/still frames. */
+    render(world, dt, fieldStep = 0) {
       const { ctx, dpr, cols, ch } = this;
       if (cols === 0) return;
       const t = world.time;
       this.consumeEvents(world);
       this.rasterizeSharks(world.sharks, t);
-      this.depositWake(world);
-      this.diffuse(dt);
+      const step = Number.isFinite(fieldStep) && fieldStep > 0 ? fieldStep : 0;
+      if (step !== this.fieldStep) {
+        this.fieldStep = step;
+        this.fieldAcc = 0;
+      }
+      if (step === 0) {
+        this.depositWake(world);
+        this.diffuse(dt);
+      } else {
+        this.fieldAcc = Math.min(this.fieldAcc + (Number.isFinite(dt) ? Math.max(0, dt) : 0), step * 4);
+        while (this.fieldAcc + 1e-10 >= step) {
+          this.depositWake(world);
+          this.diffuse(step);
+          this.fieldAcc = Math.max(0, this.fieldAcc - step);
+        }
+      }
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.drawImage(this.bg, 0, 0);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1105,31 +1126,32 @@
       const { spine, arc } = this;
       const N = SHARK_NODES;
       let best = Infinity;
-      let bestS = 0;
-      let bestSign = 1;
-      let bestNx = 0;
-      let bestNy = 0;
+      let bestSegment = 0;
+      let bestU = 0;
       for (let k = 0; k < N - 1; k++) {
-        const ax = spine[k * 2];
-        const ay = spine[k * 2 + 1];
-        const sx = spine[(k + 1) * 2] - ax;
-        const sy = spine[(k + 1) * 2 + 1] - ay;
-        const len2 = sx * sx + sy * sy || 1;
-        const u2 = clamp(((px - ax) * sx + (py - ay) * sy) / len2, 0, 1);
-        const qx = ax + sx * u2;
-        const qy = ay + sy * u2;
+        const ax2 = spine[k * 2];
+        const ay2 = spine[k * 2 + 1];
+        const sx2 = spine[(k + 1) * 2] - ax2;
+        const sy2 = spine[(k + 1) * 2 + 1] - ay2;
+        const len2 = sx2 * sx2 + sy2 * sy2 || 1;
+        const u2 = clamp(((px - ax2) * sx2 + (py - ay2) * sy2) / len2, 0, 1);
+        const qx = ax2 + sx2 * u2;
+        const qy = ay2 + sy2 * u2;
         const d2 = (px - qx) ** 2 + (py - qy) ** 2;
         if (d2 < best) {
           best = d2;
-          const len = Math.sqrt(len2);
-          bestS = (arc[k] + u2 * len) / this.arcTotal;
-          bestSign = sx * (py - ay) - sy * (px - ax) >= 0 ? 1 : -1;
-          bestNx = -sy / len * bestSign;
-          bestNy = sx / len * bestSign;
+          bestSegment = k;
+          bestU = u2;
         }
       }
+      const ax = spine[bestSegment * 2];
+      const ay = spine[bestSegment * 2 + 1];
+      const sx = spine[(bestSegment + 1) * 2] - ax;
+      const sy = spine[(bestSegment + 1) * 2 + 1] - ay;
+      const len = Math.sqrt(sx * sx + sy * sy || 1);
+      const bestSign = sx * (py - ay) - sy * (px - ax) >= 0 ? 1 : -1;
       const a = Math.sqrt(best);
-      const s = bestS;
+      const s = (arc[bestSegment] + bestU * len) / this.arcTotal;
       const u = s * L;
       const shape = this.shape;
       const w = shape.halfWidth(s) * L;
@@ -1149,6 +1171,8 @@
         }
       }
       if (a <= w) {
+        const bestNx = -sy / len * bestSign;
+        const bestNy = sx / len * bestSign;
         const across = a / (w || 1);
         const facing = (bestNx * -0.6 + bestNy * -0.8) * across;
         let shade = 0.58 - across * across * 0.42 + facing * 0.26;
@@ -1498,7 +1522,7 @@
   var OceanEngine = class {
     constructor(canvas, sharks, options = {}) {
       this.canvas = canvas;
-      this.maxFps = finiteRange(options.maxFps, 5, 60, 60);
+      this.maxFps = finiteRange(options.maxFps, 5, 144, 60);
       this.maxDpr = finiteRange(options.maxDpr, 1, 2, 2);
       this.speed = finiteRange(options.speed, 0.25, 2, 1);
       this.interactive = options.interactive !== false;
@@ -1544,6 +1568,9 @@
     onFrame;
     speed;
     interactive;
+    width = 0;
+    height = 0;
+    dpr = 1;
     /** Rendered frames, used by the glass backdrop capture to avoid redundant work. */
     frames = 0;
     paused = false;
@@ -1560,11 +1587,25 @@
       this.paused = false;
       this.schedule();
     }
-    /** Change the render-rate cap at runtime (adaptive quality). */
+    /** Change the render-rate cap without changing population or drawing quality. */
     setMaxFps(fps) {
-      this.maxFps = finiteRange(fps, 5, 60, this.maxFps);
+      this.maxFps = finiteRange(fps, 5, 144, this.maxFps);
       cancelAnimationFrame(this.raf);
       this.schedule();
+    }
+    getMetrics() {
+      return {
+        frames: this.frames,
+        time: performance.now(),
+        running: !this.disposed && !this.paused && this.visible && !this.reducedMotion.matches,
+        width: this.width,
+        height: this.height,
+        dpr: this.dpr,
+        fishCount: this.world.fish.length,
+        sharkCount: this.world.sharks.length,
+        maxFps: this.maxFps,
+        simulationTime: this.world.time
+      };
     }
     /** Change the backing-store DPR cap at runtime (adaptive quality). */
     setMaxDpr(dpr) {
@@ -1596,6 +1637,9 @@
       const rect = this.canvas.getBoundingClientRect();
       if (rect.width < 1 || rect.height < 1) return;
       const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
+      this.width = rect.width;
+      this.height = rect.height;
+      this.dpr = dpr;
       this.renderer.resize(rect.width, rect.height, dpr);
       this.world.resize(rect.width, rect.height, this.renderer.cellWidth, this.renderer.cellHeight);
       if (this.reducedMotion.matches || this.paused) {
@@ -1623,14 +1667,15 @@
       this.last = now;
       this.acc += dt;
       let steps = 0;
-      const maxSteps = Math.max(MAX_STEPS, Math.ceil(this.speed / this.maxFps / STEP) + 1);
-      while (this.acc + 1e-10 >= STEP && steps < maxSteps) {
-        this.world.step(STEP);
-        this.acc = Math.max(0, this.acc - STEP);
+      const step = 1 / Math.max(60, this.maxFps);
+      const maxSteps = Math.max(Math.ceil(MAX_STEPS * STEP / step), Math.ceil(this.speed / this.maxFps / step) + 1);
+      while (this.acc + 1e-10 >= step && steps < maxSteps) {
+        this.world.step(step);
+        this.acc = Math.max(0, this.acc - step);
         steps++;
       }
-      if (steps === maxSteps && this.acc >= STEP) this.acc %= STEP;
-      this.renderer.render(this.world, dt);
+      if (steps === maxSteps && this.acc >= step) this.acc %= step;
+      this.renderer.render(this.world, dt, this.maxFps > 60 ? this.speed / 60 : void 0);
       this.frames++;
       this.onFrame?.();
       if (!this.disposed && !this.paused && this.visible && !this.reducedMotion.matches) {

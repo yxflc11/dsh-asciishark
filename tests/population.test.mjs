@@ -36,8 +36,8 @@ function world(sharks = [], fishCount = null) {
   return instance;
 }
 
-function environment(worker = false) {
-  let now = 0, nextId = 0;
+function environment(worker = false, seed = null) {
+  let now = 0, nextId = 0, randomCalls = 0;
   const callbacks = new Map(), timers = new Map();
   const listeners = new Map();
   const events = { addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); }, removeEventListener(type, fn) { listeners.get(type)?.delete(fn); } };
@@ -60,9 +60,13 @@ function environment(worker = false) {
     IntersectionObserver: class { observe() {} disconnect() {} },
     self: { postMessage() {} },
   };
+  if (seed !== null) globals.Math = Object.assign(Object.create(Math), {
+    random() { randomCalls++; seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; },
+  });
   runInNewContext(worker ? workerCode : engineCode, globals);
   return {
     globals, callbacks, timers,
+    get randomCalls() { return randomCalls; },
     get renderer() { return globals.renderers[0]; },
     get world() { return this.renderer.world; },
     create(options = {}, sharks = []) { return new globals.EngineModule.OceanEngine(new Canvas(), sharks, options); },
@@ -152,7 +156,7 @@ for (const worker of [false, true]) {
     assert.equal(env.world.pointer.active,false);
     engine?.destroy();
   });
-  for (const fps of [15,30,45,60]) for (const speed of [.25,1,2]) {
+  for (const fps of [15,30,45,60,90,120,144]) for (const speed of [.25,1,2]) {
     test(`${label}: ${fps}fps × ${speed} speed advances real simulation time in bounded substeps`, () => {
       const env=environment(worker);
       const engine=worker ? (env.init({maxFps:fps,speed}),env.send({type:"resume"}),null) : env.create({fishCount:0,maxFps:fps,speed});
@@ -160,8 +164,9 @@ for (const worker of [false, true]) {
       w.step=function(dt){steps.push(dt);return original.call(this,dt)};
       if(worker) for(let i=1;i<=fps*2;i++) env.timer(i*1000/fps);
       else for(let i=1;i<=144*2;i++) env.frame(i*1000/144);
-      assert.ok(Math.abs(w.time-2*speed)<=1/60+1e-7,`${w.time} simulation seconds, expected ${2*speed}`);
-      assert.ok(steps.length>0&&steps.every(dt=>dt>0&&dt<=1/60));
+      const step=1/Math.max(60,fps);
+      assert.ok(Math.abs(w.time-2*speed)<=step+1e-7,`${w.time} simulation seconds, expected ${2*speed}`);
+      assert.ok(steps.length>0&&steps.every(dt=>dt===step));
       engine?.destroy();
     });
   }
@@ -181,4 +186,95 @@ for (const worker of [false, true]) {
     assert.ok(Math.abs(w.time-3)<1e-7); assert.equal(w.fish.length,6);
     engine?.destroy();
   });
+}
+
+const movementSpecs = [{kind:"classic",size:.8},{kind:"tiger",size:.6}];
+const motionState = w => JSON.stringify({
+  time:w.time,
+  fish:w.fish.map(f=>[f.x,f.y,f.vx,f.vy,f.phase,f.alarm,f.alive]),
+  sharks:w.sharks.map(s=>[[...s.nodes],s.heading,s.phase,s.speed,s.hunger,s.wander]),
+});
+
+test("60 Hz noise correction preserves the pre-change seeded World state and RNG sequence", () => {
+  const env=environment(false,123), engine=env.create({fishCount:24,paused:true},movementSpecs), w=env.world;
+  for(let i=0;i<120;i++) w.step(1/60);
+  // Captured from the original World before introducing noiseScale. Tolerate
+  // floating-point library differences, but preserve the random-call count.
+  const expected=[
+    839.6331381719485,504.0900113553845,20.52024448707763,47.805404917594565,24.374780395568838,.23418420137332668,
+    843.150432868912,443.49111760765163,69.71577508434187,1.0253294562833233,28.54966815054884,.33287147630131286,
+    182.27310180664062,352.7033386230469,181.8008575439453,344.3798828125,1.4632479940328749,9.08797249380702,35.64813930052002,.47342495416756725,.04759696106115973,
+    724.5423583984375,403.33502197265625,723.5927734375,392.2598571777344,1.5059640789672588,9.042938909418137,69.65420184801448,.42043995234649634,-.26422131349643085,
+  ];
+  const actual=[...([w.fish[0],w.fish[23]].flatMap(f=>[f.x,f.y,f.vx,f.vy,f.phase,f.alarm])),
+    ...w.sharks.flatMap(s=>[...s.nodes.slice(0,4),s.heading,s.phase,s.speed,s.hunger,s.wander])];
+  actual.forEach((value,i)=>assert.ok(Math.abs(value-expected[i])<1e-6,`legacy state component ${i}: ${value}`));
+  assert.equal(env.randomCalls,6111);assert.ok(Math.abs(w.time-2)<1e-12);engine.destroy();
+});
+
+test("real fish jitter retains its velocity-noise variance per simulation second at high refresh", () => {
+  for(const fps of [60,90,120,144]) {
+    const velocities=[];
+    for(const random of [.25,.75]) {
+      const env=environment(false,789),engine=env.create({fishCount:1,paused:true}),w=env.world;
+      Object.assign(w.fish[0],{x:450,y:300,vx:36,vy:0,species:0,alarm:0,alive:true,turn:0});
+      env.globals.Math.random=()=>random;
+      w.step(1/fps);velocities.push([w.fish[0].vx,w.fish[0].vy]);engine.destroy();
+    }
+    // Paired worlds cancel all deterministic steering/current forces. Species
+    // 0 has jitter 40; equal quantiles must differ by 20*sqrt(dt/60).
+    for(let axis=0;axis<2;axis++) assert.ok(Math.abs((velocities[1][axis]-velocities[0][axis])*Math.sqrt(fps)-20/Math.sqrt(60))<1e-10);
+  }
+});
+
+test("real shark wander has matching seeded noise variance at 60/90/120/144 Hz", () => {
+  let reference;
+  for(const fps of [60,90,120,144]) {
+    const env=environment(false,2468),engine=env.create({fishCount:0,paused:true},movementSpecs.slice(0,1)),w=env.world;
+    const countBefore=env.randomCalls, increments=[];
+    for(let i=0;i<256;i++) {
+      // Isolate each stochastic increment from the wander boundary clamp.
+      w.sharks[0].wander=0;w.step(1/fps);increments.push(w.sharks[0].wander);
+    }
+    const mean=increments.reduce((sum,value)=>sum+value,0)/increments.length;
+    const variancePerSecond=increments.reduce((sum,value)=>sum+(value-mean)**2,0)/increments.length*fps;
+    assert.equal(env.randomCalls-countBefore,256,"one RNG draw per shark step, with no reseeding");
+    assert.ok(variancePerSecond>.01&&variancePerSecond<.018,"sample agrees with the legacy 3.2²/(12*60) noise strength");
+    if(reference===undefined)reference=variancePerSecond;
+    else assert.ok(Math.abs(variancePerSecond-reference)<1e-12,"same random quantiles retain equal variance per simulated second");
+    engine.destroy();
+  }
+});
+
+for (const worker of [false,true]) {
+  test(`${worker?"Worker":"local"}: default 60fps retains the existing 1/60 World trajectory`,()=>{
+    const env=environment(worker,123), reference=environment(false,123);
+    const engine=worker?(env.init({fishCount:24,sharks:movementSpecs}),env.send({type:"resume"}),null):env.create({fishCount:24},movementSpecs);
+    const baseline=reference.create({fishCount:24,paused:true},movementSpecs);
+    for(let i=1;i<=120;i++){
+      worker?env.timer(i*1000/60):env.frame(i*1000/60);
+      baseline.world.step(1/60);
+    }
+    assert.equal(motionState(env.world),motionState(baseline.world));
+    engine?.destroy();baseline.destroy();
+  });
+  for(const fps of [90,120,144]) {
+    test(`${worker?"Worker":"local"}: ${fps}fps changes real fish and shark positions on every nominal frame`,()=>{
+      const env=environment(worker,456);
+      const engine=worker?(env.init({fishCount:12,sharks:movementSpecs,maxFps:fps}),env.send({type:"resume"}),null):env.create({fishCount:12,maxFps:fps},movementSpecs);
+      const positions=[];
+      for(let i=1;i<=fps;i++){
+        worker?env.timer(i*1000/fps):env.frame(i*1000/fps);
+        const w=env.world,f=w.fish[0],s=w.sharks[0];
+        positions.push([f.x,f.y,s.nodes[0],s.nodes[1]]);
+        assert.ok([...w.fish.flatMap(f=>[f.x,f.y,f.vx,f.vy,f.phase,f.alarm]),...w.sharks.flatMap(s=>[...s.nodes,s.speed,s.phase])].every(Number.isFinite));
+      }
+      for(let i=1;i<positions.length;i++) {
+        assert.notDeepEqual(positions[i].slice(0,2),positions[i-1].slice(0,2),"fish move between high-refresh frames");
+        assert.notDeepEqual(positions[i].slice(2),positions[i-1].slice(2),"sharks move between high-refresh frames");
+      }
+      assert.ok(Math.abs(env.world.time-1)<1e-9);assert.equal(env.world.fish.length,12);assert.equal(env.world.sharks.length,2);
+      engine?.destroy();
+    });
+  }
 }

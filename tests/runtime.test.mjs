@@ -34,6 +34,8 @@ const bundle = await build({
         if (path === "./world") return { contents: `
           export class World {
             time = 0;
+            fish = [];
+            sharks = [];
             pointer = { active: false, x: 0, y: 0 };
             resize() {}
             configure() {}
@@ -66,6 +68,7 @@ const client = bundle.outputFiles[0].text;
 
 function browser({ worker = "ok", reducedMotion = false, focused = true, hidden = false } = {}) {
   const intervals = new Map();
+  const timeouts = new Map();
   const animationFrames = new Map();
   const observers = [];
   const workers = [];
@@ -267,6 +270,8 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
     getComputedStyle: () => ({ fontFamily: "monospace" }),
     matchMedia: window.matchMedia,
     setInterval: window.setInterval,
+    setTimeout: (callback) => { const id = nextHandle++; timeouts.set(id, callback); return id; },
+    clearTimeout: id => timeouts.delete(id),
     clearInterval: (handle) => intervals.delete(handle),
     requestAnimationFrame: (callback) => {
       const handle = nextHandle++;
@@ -279,7 +284,7 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
   runInNewContext(client, globals);
 
   return {
-    document, window, workers, canvases, createdUrls, revokedUrls, intervals, animationFrames,
+    document, window, workers, canvases, createdUrls, revokedUrls, intervals, timeouts, animationFrames,
     get ocean() { return window.__dshAsciiOcean; },
     get surface() { return document.getElementById("dsh-ascii-ocean-surface"); },
     get canvas() { return document.getElementById("dsh-ascii-ocean-canvas"); },
@@ -316,6 +321,27 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
     },
   };
 }
+
+test('metrics reads live Worker counters without touching glass snapshots and clears pending reads',async()=>{
+  const env=browser();env.mount();
+  try {
+    const worker=env.workers[0];
+    const snapshots=worker.messages.filter(m=>m.type==='snapshot').length;
+    const pending=env.ocean.getMetrics();
+    const request=worker.messages.at(-1);
+    assert.equal(request.type,'metrics');
+    worker.onmessage({data:{type:'metrics',requestId:request.requestId,frames:123,time:2000,maxFps:120}});
+    assert.equal((await pending).frames,123);
+    assert.equal(worker.messages.filter(m=>m.type==='snapshot').length,snapshots);
+    assert.equal(env.timeouts.size,0);
+    const timedOut=env.ocean.getMetrics();
+    const expire=[...env.timeouts.values()][0];env.timeouts.clear();expire();
+    assert.equal(await timedOut,null);
+    const removed=env.ocean.getMetrics();env.unmount();
+    assert.equal(await removed,null);
+    assert.equal(env.timeouts.size,0);
+  } finally { env.unmount(); }
+});
 
 for (const failure of ["constructor-throws", "init-throws"]) {
   test(`Worker ${failure}: transferred canvas is replaced and its URL is revoked`, (t) => {

@@ -316,6 +316,9 @@ export class AsciiRenderer {
   /** Fish cells bucketed by brightness, so each bucket is one fillStyle. */
   private fishBuckets: number[][] = FISH_ALPHAS.map(() => []);
   private fishStyles = FISH_ALPHAS.map((a) => `rgba(230,238,255,${a})`);
+  /** High-refresh frames share the original 60 Hz wake cadence. */
+  private fieldStep = 0;
+  private fieldAcc = 0;
 
   constructor(private canvas: HTMLCanvasElement | OffscreenCanvas) {
     const ctx = canvas.getContext("2d", { alpha: false }) as CanvasRenderingContext2D | null;
@@ -347,6 +350,7 @@ export class AsciiRenderer {
   }
 
   resize(width: number, height: number, dpr: number) {
+    this.fieldAcc = 0;
     this.width = width;
     this.height = height;
     this.dpr = dpr;
@@ -398,15 +402,33 @@ export class AsciiRenderer {
     paintGrid(g, W, H, cw, ch, dpr);
   }
 
-  render(world: World, dt: number) {
+  /** fieldStep is speed / 60 above 60 fps; omit it for legacy/still frames. */
+  render(world: World, dt: number, fieldStep = 0) {
     const { ctx, dpr, cols, ch } = this;
     if (cols === 0) return;
     const t = world.time;
 
     this.consumeEvents(world);
     this.rasterizeSharks(world.sharks, t);
-    this.depositWake(world);
-    this.diffuse(dt);
+    const step = Number.isFinite(fieldStep) && fieldStep > 0 ? fieldStep : 0;
+    if (step !== this.fieldStep) {
+      this.fieldStep = step;
+      this.fieldAcc = 0;
+    }
+    if (step === 0) {
+      // Keep the existing <=60 fps and static rendering path byte-for-byte.
+      this.depositWake(world);
+      this.diffuse(dt);
+    } else {
+      // dt already includes playback speed. Limit recovery after a long gap;
+      // normal high-refresh frames perform zero or one 60 Hz field update.
+      this.fieldAcc = Math.min(this.fieldAcc + (Number.isFinite(dt) ? Math.max(0, dt) : 0), step * 4);
+      while (this.fieldAcc + 1e-10 >= step) {
+        this.depositWake(world);
+        this.diffuse(step);
+        this.fieldAcc = Math.max(0, this.fieldAcc - step);
+      }
+    }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(this.bg, 0, 0);
@@ -509,10 +531,10 @@ export class AsciiRenderer {
     const { spine, arc } = this;
     const N = SHARK_NODES;
     let best = Infinity;
-    let bestS = 0;
-    let bestSign = 1;
-    let bestNx = 0;
-    let bestNy = 0;
+    // Only the nearest segment determines shading. Keep its projection, then
+    // compute arc position and the normal once after the distance search.
+    let bestSegment = 0;
+    let bestU = 0;
     for (let k = 0; k < N - 1; k++) {
       const ax = spine[k * 2];
       const ay = spine[k * 2 + 1];
@@ -525,16 +547,19 @@ export class AsciiRenderer {
       const d2 = (px - qx) ** 2 + (py - qy) ** 2;
       if (d2 < best) {
         best = d2;
-        const len = Math.sqrt(len2);
-        bestS = (arc[k] + u * len) / this.arcTotal;
-        bestSign = sx * (py - ay) - sy * (px - ax) >= 0 ? 1 : -1;
-        bestNx = (-sy / len) * bestSign;
-        bestNy = (sx / len) * bestSign;
+        bestSegment = k;
+        bestU = u;
       }
     }
 
+    const ax = spine[bestSegment * 2];
+    const ay = spine[bestSegment * 2 + 1];
+    const sx = spine[(bestSegment + 1) * 2] - ax;
+    const sy = spine[(bestSegment + 1) * 2 + 1] - ay;
+    const len = Math.sqrt(sx * sx + sy * sy || 1);
+    const bestSign = sx * (py - ay) - sy * (px - ax) >= 0 ? 1 : -1;
     const a = Math.sqrt(best);
-    const s = bestS;
+    const s = (arc[bestSegment] + bestU * len) / this.arcTotal;
     const u = s * L;
     const shape = this.shape;
     const w = shape.halfWidth(s) * L;
@@ -559,6 +584,8 @@ export class AsciiRenderer {
     }
 
     if (a <= w) {
+      const bestNx = (-sy / len) * bestSign;
+      const bestNy = (sx / len) * bestSign;
       const across = a / (w || 1);
       // Rounded back lit from the top-left; flanks fall off into shadow.
       const facing = (bestNx * -0.6 + bestNy * -0.8) * across;

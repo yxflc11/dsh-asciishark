@@ -16,6 +16,20 @@ export interface OceanConfiguration {
   interactive?: boolean;
 }
 
+/** An on-demand counter sample; reading it never renders or restarts playback. */
+export interface OceanMetrics {
+  frames: number;
+  time: number;
+  running: boolean;
+  width: number;
+  height: number;
+  dpr: number;
+  fishCount: number;
+  sharkCount: number;
+  maxFps: number;
+  simulationTime: number;
+}
+
 const INTERACTIVE_SELECTOR = [
   "a", "button", "input", "textarea", "select", "option", "label", "summary",
   '[contenteditable]:not([contenteditable="false"])', "[data-ocean-controls]",
@@ -57,6 +71,9 @@ export class OceanEngine {
   private onFrame?: () => void;
   private speed: number;
   private interactive: boolean;
+  private width = 0;
+  private height = 0;
+  private dpr = 1;
   /** Rendered frames, used by the glass backdrop capture to avoid redundant work. */
   frames = 0;
   private paused = false;
@@ -66,7 +83,7 @@ export class OceanEngine {
     sharks?: SharkSpec[],
     options: OceanConfiguration & { maxFps?: number; maxDpr?: number; paused?: boolean; initialStatic?: boolean; onFrame?: () => void } = {},
   ) {
-    this.maxFps = finiteRange(options.maxFps, 5, 60, 60);
+    this.maxFps = finiteRange(options.maxFps, 5, 144, 60);
     this.maxDpr = finiteRange(options.maxDpr, 1, 2, 2);
     this.speed = finiteRange(options.speed, 0.25, 2, 1);
     this.interactive = options.interactive !== false;
@@ -115,11 +132,21 @@ export class OceanEngine {
     this.schedule();
   }
 
-  /** Change the render-rate cap at runtime (adaptive quality). */
+  /** Change the render-rate cap without changing population or drawing quality. */
   setMaxFps(fps: number) {
-    this.maxFps = finiteRange(fps, 5, 60, this.maxFps);
+    this.maxFps = finiteRange(fps, 5, 144, this.maxFps);
     cancelAnimationFrame(this.raf);
     this.schedule();
+  }
+
+  getMetrics(): OceanMetrics {
+    return {
+      frames: this.frames, time: performance.now(),
+      running: !this.disposed && !this.paused && this.visible && !this.reducedMotion.matches,
+      width: this.width, height: this.height, dpr: this.dpr,
+      fishCount: this.world.fish.length, sharkCount: this.world.sharks.length,
+      maxFps: this.maxFps, simulationTime: this.world.time,
+    };
   }
 
   /** Change the backing-store DPR cap at runtime (adaptive quality). */
@@ -155,6 +182,7 @@ export class OceanEngine {
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
     const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
+    this.width = rect.width; this.height = rect.height; this.dpr = dpr;
     this.renderer.resize(rect.width, rect.height, dpr);
     this.world.resize(rect.width, rect.height, this.renderer.cellWidth, this.renderer.cellHeight);
     if (this.reducedMotion.matches || this.paused) {
@@ -186,15 +214,19 @@ export class OceanEngine {
     this.last = now;
     this.acc += dt;
     let steps = 0;
+    // Keep the existing 60 Hz trajectory at ordinary caps. High-refresh
+    // frames use smaller real simulation steps, rather than redrawing the
+    // same 60 Hz state. Scale the catch-up count to preserve its time budget.
+    const step = 1 / Math.max(60, this.maxFps);
     // One extra step carries fractional time across display/timer jitter.
-    const maxSteps = Math.max(MAX_STEPS, Math.ceil(this.speed / this.maxFps / STEP) + 1);
-    while (this.acc + 1e-10 >= STEP && steps < maxSteps) {
-      this.world.step(STEP);
-      this.acc = Math.max(0, this.acc - STEP);
+    const maxSteps = Math.max(Math.ceil(MAX_STEPS * STEP / step), Math.ceil(this.speed / this.maxFps / step) + 1);
+    while (this.acc + 1e-10 >= step && steps < maxSteps) {
+      this.world.step(step);
+      this.acc = Math.max(0, this.acc - step);
       steps++;
     }
-    if (steps === maxSteps && this.acc >= STEP) this.acc %= STEP;
-    this.renderer.render(this.world, dt);
+    if (steps === maxSteps && this.acc >= step) this.acc %= step;
+    this.renderer.render(this.world, dt, this.maxFps > 60 ? this.speed / 60 : undefined);
     this.frames++;
     this.onFrame?.();
     if (!this.disposed && !this.paused && this.visible && !this.reducedMotion.matches) {

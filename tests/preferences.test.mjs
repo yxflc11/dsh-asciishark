@@ -38,7 +38,7 @@ test('valid zero populations and disabled options survive saving and reloading',
 });
 
 test('out-of-range and non-finite settings cannot create unbounded work',()=>{
-  const settings=normalizePreferences({fishCount:99999,sharkCount:999,maxFps:144,speed:Infinity,clarity:NaN});
+  const settings=normalizePreferences({fishCount:99999,sharkCount:999,maxFps:999,speed:Infinity,clarity:NaN});
   assert.equal(settings.fishCount,600);
   assert.equal(settings.sharkCount,12);
   assert.equal(settings.maxFps,60);
@@ -47,4 +47,12 @@ test('out-of-range and non-finite settings cannot create unbounded work',()=>{
   assert.equal(normalizePreferences({fishCount:-1}).fishCount,0);
   assert.equal(normalizePreferences({fishCount:'100'}).fishCount,null);
   assert.equal(normalizePreferences({fishCount:5.6}).fishCount,6);
+});
+
+test('high refresh selections persist without changing population, clarity or speed',()=>{
+  for(const maxFps of [90,120,144]) {
+    const next=normalizePreferences({...DEFAULT_PREFERENCES,maxFps});
+    savePreferences(next);
+    assert.deepEqual(plain(readPreferences()),{...plain(DEFAULT_PREFERENCES),maxFps});
+  }
 });

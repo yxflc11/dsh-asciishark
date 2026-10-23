@@ -94,6 +94,9 @@ const INK_FILTER = "invert(1) hue-rotate(180deg) saturate(1.8) contrast(1.35) br
 const CSS = `
 .dsh-ocean-settings { max-width: 800px; color: inherit; font: inherit; --ocean-control-bg: rgba(255,255,255,.94); }
 body[data-ds-dark-theme] .dsh-ocean-settings { --ocean-control-bg: rgba(25,29,36,.95); }
+.dsh-ocean-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; margin-bottom: 20px; font-size: 13px; }
+.dsh-ocean-ascii { font: 600 15px/1.5 ui-monospace, Menlo, monospace; color: #27678b; letter-spacing: .04em; white-space: pre; }
+body[data-ds-dark-theme] .dsh-ocean-ascii { color: #85c7e6; }
 .dsh-ocean-settings fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .dsh-ocean-settings legend { font-weight: 600; padding: 0; margin-bottom: 12px; }
 .dsh-ocean-modes { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
@@ -214,6 +217,7 @@ interface OceanHandle {
   setPreferences(patch: Partial<OceanPreferences>): void;
   resetPreferences(): void;
   getSnapshot(): any;
+  getMetrics(): Promise<any>;
   subscribe(listener: () => void): () => void;
   destroy(): void;
 }
@@ -326,6 +330,8 @@ function createOcean(ctx: any): OceanHandle {
   let worker: Worker | null = null;
   let workerUrl: string | null = null;
   let workerFrames = 0;
+  let metricId = 0;
+  const metricRequests = new Map<string, { resolve: (value: any) => void; timer: ReturnType<typeof setTimeout> }>();
   let targets: Targets | null = null;
   let focused = document.hasFocus();
   let disposed = false;
@@ -456,6 +462,8 @@ function createOcean(ctx: any): OceanHandle {
   const workerDpr = () => Math.min(window.devicePixelRatio || 1, 1.5);
   const post = (message: any) => worker?.postMessage(message);
   const stopWorker = () => {
+    for (const request of metricRequests.values()) { clearTimeout(request.timer); request.resolve(null); }
+    metricRequests.clear();
     if (worker) {
       worker.onmessage = null; worker.onerror = null;
       try { worker.postMessage({ type: "dispose" }); } catch { /* already failed */ }
@@ -489,6 +497,12 @@ function createOcean(ctx: any): OceanHandle {
       const next = new Worker(workerUrl); worker = next;
       next.onmessage = (event: MessageEvent) => {
         const data = event.data as Record<string, any>;
+        if (data?.type === "metrics") {
+          if (worker !== next) return;
+          const request = metricRequests.get(data.requestId);
+          if (request) { clearTimeout(request.timer); metricRequests.delete(data.requestId); request.resolve(data); }
+          return;
+        }
         if (data?.type !== "snapshot") return;
         if (worker !== next || !inFlight || data.requestId !== inFlight.id) { data.bitmap?.close(); return; }
         const revision = inFlight.revision; inFlight = null;
@@ -672,6 +686,17 @@ function createOcean(ctx: any): OceanHandle {
     get mounted() { return wrap?.isConnected === true; },
     get frames() { return worker ? workerFrames : (engine?.frames ?? 0); },
     getSnapshot: () => state,
+    // Read the renderer clock directly; glass snapshots can carry old counts.
+    getMetrics() {
+      if (!worker) return Promise.resolve(engine?.getMetrics() ?? null);
+      return new Promise(resolve => {
+        const id = `metrics-${++metricId}`;
+        const timer = setTimeout(() => { metricRequests.delete(id); resolve(null); }, 2000);
+        metricRequests.set(id, { resolve, timer });
+        try { post({ type: "metrics", requestId: id }); }
+        catch { clearTimeout(timer); metricRequests.delete(id); resolve(null); }
+      });
+    },
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
     setMode, setPreferences,
     resetPreferences() { setPreferences({ ...DEFAULT_PREFERENCES }); },
