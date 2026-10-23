@@ -181,4 +181,4 @@ dsh-ascii-ocean/
 
 本插件代码以 [MIT License](LICENSE) 发布。
 
-⚠️ 注意：`src/ascii-sharks/` 来自上游 ascii-sharks 仓库，该仓库**没有声明许可证**。在公开分发本仓库（或插件包）前，请先联系上游作者取得许可，或将该目录替换为你拥有授权的实现；如果你只是自己/团队内部使用，则不受影响。详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+⚠️ 注意：`src/ascii-sharks/` 来自上游 ascii-sharks 仓库，该仓库**没有声明许可证**。维护者正在联系上游作者取得许可（2026-10）；**在许可确认前，请勿再分发本仓库或插件包**。若最终无法取得许可，该目录需替换为有授权的实现。详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

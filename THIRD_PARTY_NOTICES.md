@@ -15,10 +15,11 @@ Licensed under the MIT License. See `LICENSE`.
   changes.
 - License: the upstream repository does not include a LICENSE file (checked
   October 2026), so no license is declared by the author. It is used here with
-  attribution. **Before publishing this repository publicly or redistributing
-  the plugin, ask the upstream author for permission, or replace the copied
-  sources with a licensed alternative.** If you keep the repository private,
-  this is only a local matter between you and the upstream author.
+  attribution. **The maintainer is requesting permission from the upstream
+  author (October 2026). Until that permission is confirmed, please do not
+  redistribute this repository or the built plugin package. If permission
+  cannot be obtained, the copied sources should be replaced with a licensed
+  implementation.**
 - Copyright: © the ascii-sharks author (stackedlol).
 
 ## rdev/liquid-glass-react
