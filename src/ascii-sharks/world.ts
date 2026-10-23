@@ -84,6 +84,7 @@ const FISH_ALIGN_K = 1.4;
 const FISH_COHESION_K = 1;
 const FISH_FLEE_K = 1100;
 const BLIND_COS = -0.6; // ~127° either side of the heading is visible
+const REFERENCE_STEP = 1 / 60;
 const SHARK_KINDS = new Set<SharkKind>(["classic", "hammerhead", "zebra", "tiger", "greathammer", "mako", "thresher", "nurse"]);
 
 function validSharks(specs: SharkSpec[]): SharkSpec[] {
@@ -271,8 +272,12 @@ export class World {
   step(dt: number) {
     this.time += dt;
     this.rebuildHash();
-    this.stepFish(dt);
-    this.stepSharks(dt);
+    // Independent noise increments scale with sqrt(dt), so finer high-refresh
+    // steps retain the same variance per simulation second. Preserve the
+    // original 60 Hz arithmetic and random-call sequence exactly.
+    const noiseScale = dt > 0 && Number.isFinite(dt) && dt !== REFERENCE_STEP ? Math.sqrt(REFERENCE_STEP / dt) : 1;
+    this.stepFish(dt, noiseScale);
+    this.stepSharks(dt, noiseScale);
     this.respawn();
   }
 
@@ -308,7 +313,7 @@ export class World {
     return r * this.bucketCols + c;
   }
 
-  private stepFish(dt: number) {
+  private stepFish(dt: number, noiseScale: number) {
     const { fish, sharks, pointer, width: W, height: H, time } = this;
     const R = this.perception;
     const R2 = R * R;
@@ -470,8 +475,8 @@ export class World {
 
       // Ambient current and a little individual restlessness.
       current(f.x, f.y, time, cur);
-      ax += cur.x * 0.5 + (Math.random() - 0.5) * sp.jitter;
-      ay += cur.y * 0.5 + (Math.random() - 0.5) * sp.jitter;
+      ax += cur.x * 0.5 + (Math.random() - 0.5) * sp.jitter * noiseScale;
+      ay += cur.y * 0.5 + (Math.random() - 0.5) * sp.jitter * noiseScale;
       // Swim level, except when bolting from danger.
       ay -= f.vy * sp.verticalDrag * (1 - 0.7 * f.alarm);
 
@@ -499,7 +504,7 @@ export class World {
     }
   }
 
-  private stepSharks(dt: number) {
+  private stepSharks(dt: number, noiseScale: number) {
     const { sharks, width: W, height: H, time } = this;
     const minSide = Math.min(W, H);
     const cxW = W / 2;
@@ -518,7 +523,7 @@ export class World {
       let dy = Math.sin(sh.heading);
 
       // Wander: a slowly drifting offset on a circle ahead of the snout.
-      sh.wander = clamp(sh.wander + (Math.random() - 0.5) * dt * 3.2, -1.1, 1.1);
+      sh.wander = clamp(sh.wander + (Math.random() - 0.5) * dt * 3.2 * noiseScale, -1.1, 1.1);
       dx += Math.cos(sh.heading + sh.wander) * 0.45;
       dy += Math.sin(sh.heading + sh.wander) * 0.45;
 

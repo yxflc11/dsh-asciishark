@@ -13,7 +13,7 @@ const boundaries = {
     builder.onLoad({ filter: /.*/, namespace: "boundary" }, ({ path }) => ({ contents: path.endsWith("world") ? `
       export class World {
         time = 0; steps = 0; splashes = []; pointer = {};
-        constructor() { globalThis.worlds.push(this); }
+        constructor(sharks = [], fishCount = 3) { this.sharks = sharks; this.fish = Array.from({length:fishCount ?? 3},()=>({})); globalThis.worlds.push(this); }
         resize() {}
         step(dt) { this.steps++; this.time += dt; }
         splash(x, y) { this.splashes.push({x, y}); }
@@ -24,7 +24,7 @@ const boundaries = {
         constructor(canvas) { this.canvas = canvas; globalThis.renderers.push(this); }
         setFontFamily() {}
         resize(w, h, dpr) { this.canvas.width = Math.round(w*dpr); this.canvas.height = Math.round(h*dpr); }
-        render(world, dt) { this.draws.push({time:world.time, dt}); }
+        render(world, dt, fieldStep = 0) { this.draws.push({time:world.time, dt, fieldStep}); }
       }
     ` }));
   },
@@ -83,11 +83,12 @@ function environment({ worker = false, reduced = false } = {}) {
   };
 }
 
-for (const hz of [60, 120, 144]) for (const cap of [30, 45, 60]) {
+for (const hz of [60, 90, 120, 144]) for (const cap of [30, 45, 60, 90, 120, 144]) {
   test(`local ${hz}Hz rAF respects ${cap}fps without rounding down`, () => {
     const env = environment(); const engine = env.create({ maxFps: cap });
     for (let i = 1; i <= hz * 2; i++) env.frame(i * 1000 / hz);
-    assert.ok(Math.abs(engine.frames - cap * 2) <= 1, `${engine.frames} frames, expected ${cap * 2}`);
+    const expected = Math.min(hz, cap) * 2;
+    assert.ok(Math.abs(engine.frames - expected) <= 1, `${engine.frames} frames, expected ${expected}`);
     assert.ok(env.world.time > 1.94 && env.world.time <= 2.01, "simulation follows elapsed active time");
     engine.destroy(); assert.equal(env.callbacks.size, 0);
   });
@@ -105,6 +106,67 @@ test("local pause resize redraws without advancing the world or restarting callb
   assert.ok(env.world.time - time < 0.02, "resume excludes time spent paused");
   engine.destroy();
 });
+
+for (const worker of [false, true]) for (const cap of [90, 120, 144]) {
+  test(`${worker ? "Worker" : "local"} ${cap}fps advances every nominal frame in finer motion steps`, () => {
+    const env = environment({ worker });
+    const engine = worker ? (env.init({ maxFps: cap }), null) : env.create({ maxFps: cap });
+    for (let i = 1; i <= cap; i++) worker ? env.timer(i * 1000 / cap) : env.frame(i * 1000 / cap);
+    assert.equal(env.renderer.draws.length, cap);
+    assert.equal(env.world.steps, cap, "high refresh must advance the world, not only redraw a 60 Hz state");
+    env.renderer.draws.forEach((draw, i) => assert.ok(Math.abs(draw.time - (i + 1) / cap) < 1e-9));
+    assert.ok(env.renderer.draws.every(draw => draw.fieldStep === 1 / 60));
+    worker ? env.send({ type: "pause" }) : engine.pause();
+    worker ? env.send({ type: "resize", width: 900, height: 600, dpr: 1 }) : env.resize();
+    assert.equal(env.renderer.draws.at(-1).fieldStep, 0, "static redraw keeps the original wake-field update");
+    engine?.destroy();
+  });
+}
+
+test("144fps Worker deadlines reject early wakeups and keep phase after jitter and stalls", () => {
+  const env = environment({ worker: true }); env.init({ maxFps: 144 });
+  env.timer(5); assert.equal(env.renderer.draws.length, 0);
+  env.timer(7); env.timer(15);
+  assert.equal(env.renderer.draws.length, 2);
+  assert.ok(Math.abs([...env.timers.values()][0].at - 1000 / 48) < 1e-9);
+  env.timer(1000);
+  assert.equal(env.renderer.draws.length, 3, "a long stall must not render an unbounded burst");
+  assert.ok(env.world.time < .1, "catch-up remains bounded to the original simulation-time budget");
+  assert.ok([...env.timers.values()][0].at > 1000, "next deadline is in the future");
+});
+
+for (const worker of [false, true]) {
+  test(`${worker ? "Worker" : "local"} high-refresh wake cadence preserves the configured speed multiplier`, () => {
+    for (const cap of [60, 144]) for (const speed of [.25, 2]) {
+      const env = environment({ worker });
+      const engine = worker ? (env.init({ maxFps: cap, speed }), null) : env.create({ maxFps: cap, speed });
+      worker ? env.timer(1000 / cap) : env.frame(1000 / cap);
+      assert.equal(env.renderer.draws.at(-1).fieldStep, cap > 60 ? speed / 60 : 0);
+      engine?.destroy();
+    }
+  });
+  test(`${worker ? "Worker" : "local"} metrics are passive counters with no bitmap or playback side effects`, () => {
+    const env = environment({ worker });
+    const engine = worker ? (env.init({ paused: true, fishCount: 5, maxFps: 144 }), null) : env.create({ paused: true, fishCount: 5, maxFps: 144 });
+    const sample = (requestId) => {
+      if (!worker) return engine.getMetrics();
+      env.send({ type: "metrics", requestId });
+      const result = env.messages.at(-1); assert.equal(result.type, "metrics"); assert.equal(result.requestId, requestId); return result;
+    };
+    const before = sample("paused");
+    assert.equal(before.running, false); assert.equal(before.fishCount, 5); assert.equal(before.sharkCount, 0);
+    assert.equal(before.width, 900); assert.equal(before.height, 600); assert.equal(before.dpr, 1); assert.equal(before.maxFps, 144);
+    env.advance(1234); const later = sample(2);
+    assert.equal(later.time - before.time, 1234); assert.equal(later.frames, before.frames); assert.equal(later.simulationTime, before.simulationTime);
+    assert.equal(env.callbacks.size + env.timers.size, 0); assert.equal(env.bitmaps.length, 0);
+    worker ? env.send({ type: "resume" }) : engine.resume();
+    const handles = [...(worker ? env.timers : env.callbacks).keys()]; assert.equal(sample("running").running, true);
+    assert.deepEqual([...(worker ? env.timers : env.callbacks).keys()], handles, "sampling does not reset deadlines");
+    worker ? env.send({ type: "fps", fps: 999 }) : engine.setMaxFps(999); assert.equal(sample("clamped").maxFps, 144);
+    worker ? env.send({ type: "dispose" }) : engine.destroy(); assert.equal(sample("disposed").running, false);
+    assert.equal(env.callbacks.size + env.timers.size, 0); assert.equal(env.bitmaps.length, 0);
+  });
+}
 
 test("initial static settles once, while ordinary initial pause does not fast-forward", () => {
   for (const worker of [false, true]) for (const initialStatic of [false, true]) {
