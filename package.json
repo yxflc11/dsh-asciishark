@@ -18,7 +18,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "pack:tgz": "npm pack --pack-destination dist"
+    "pack:tgz": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\" && npm pack --pack-destination dist"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
@@ -29,7 +29,7 @@
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],
-  "license": "MIT",
+  "license": "SEE LICENSE IN THIRD_PARTY_NOTICES.md",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yxflc11/dsh-asciishark.git"

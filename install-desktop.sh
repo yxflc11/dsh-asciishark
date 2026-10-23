@@ -18,7 +18,8 @@ fi
 mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
 mkdir -p "$DEST"
-cp -R "$HERE/lib" "$HERE/package.json" "$DEST/"
+cp -R "$HERE/lib" "$HERE/package.json" "$HERE/README.md" \
+  "$HERE/LICENSE" "$HERE/THIRD_PARTY_NOTICES.md" "$DEST/"
 
 # 2. Patch row: hot-reloaded by dsh-hmr, so the canvas appears without a restart.
 if ! grep -q 'id: ui-ascii-ocean' "$PATCH"; then

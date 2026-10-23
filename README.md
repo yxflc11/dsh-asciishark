@@ -1,6 +1,8 @@
-# dsh-ascii-ocean
+# dsh-asciishark
 
 把 [stackedlol/ascii-sharks](https://github.com/stackedlol/ascii-sharks) 的 ASCII 鲨鱼海洋动画做成 **DeepSeek Harness Web/Desktop 客户端的动态背景**。
+
+> **上游授权待确认（2026-10-23）**：已向作者提交 [MIT 授权申请](https://github.com/stackedlol/ascii-sharks/issues/1#issuecomment-6355506507)，尚未获得授权。维护者原创贡献的 MIT 许可不覆盖上游代码；在授权确认前，请勿再分发本仓库或插件包。各部分的授权范围见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
 这是一个 DSH 客户端插件包：海洋铺在整扇窗的底层，**左侧边栏**是苹果 Liquid Glass 风格的贴边液态玻璃窗（SVG 位移折射 + 色散边 + 模糊背景，无圆角/无内缩/无光晕），**对话主栏**是更清透的玻璃，鱼群和鲨鱼在两栏后面游动；右侧文档/终端栏、菜单、弹窗保持原本的不透明表面。
 
@@ -39,7 +41,7 @@
 
 ```sh
 git clone https://github.com/yxflc11/dsh-asciishark.git
-cd dsh-ascii-ocean
+cd dsh-asciishark
 ./install-desktop.sh
 ```
 
@@ -47,7 +49,7 @@ cd dsh-ascii-ocean
 
 ```powershell
 git clone https://github.com/yxflc11/dsh-asciishark.git
-cd dsh-ascii-ocean
+cd dsh-asciishark
 powershell -ExecutionPolicy Bypass -File .\install-desktop.ps1
 ```
 
@@ -70,7 +72,7 @@ DSH 会通过 `dsh-hmr` 热重载 profile patch，**无需重启应用**；下�
 
 ### 手动安装（任意系统 / DSH Web）
 
-1. 把本仓库的 `lib/` 和 `package.json` 复制到 `<DSH Home>/profiles/desktop/node_modules/@local/dsh-client-ui-ascii-ocean/`（没有该目录就新建）；
+1. 把本仓库的 `lib/`、`package.json`、`README.md`、`LICENSE` 和 `THIRD_PARTY_NOTICES.md` 复制到 `<DSH Home>/profiles/desktop/node_modules/@local/dsh-client-ui-ascii-ocean/`（没有该目录就新建）；
 2. 在上面那个 profile 的 `cordis.patch.yml` 末尾追加同样的 YAML 条目；
 3. 刷新页面（`⌘R` / `Ctrl+R`）或重启 DSH。
 
@@ -129,15 +131,15 @@ open preview/index.html
 ## 打包
 
 ```sh
-npm pack --pack-destination dist
+npm run pack:tgz
 ```
 
-生成 `dist/local-dsh-client-ui-ascii-ocean-0.10.0.tgz`，可直接用于 pnpm/npm 本地安装（配合 profile 的 `node_modules` 目录或 `dsh plugin --profile desktop add file:...`）。
+脚本会先创建 `dist/`，再生成 `dist/local-dsh-client-ui-ascii-ocean-0.10.0.tgz`，包含 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`。上游授权待确认期间，请勿再分发该包；打包成功不代表获得授权。
 
 ## 目录
 
 ```
-dsh-ascii-ocean/
+dsh-asciishark/
 ├── src/
 │   ├── client.ts            # DSH 客户端插件（全窗海洋 + 左栏/对话栏局部 token）
 │   ├── preview.ts           # 独立预览入口
@@ -175,10 +177,10 @@ dsh-ascii-ocean/
 
 - 动画算法与渲染器来自 [stackedlol/ascii-sharks](https://github.com/stackedlol/ascii-sharks)（本仓库 `src/ascii-sharks/` 为其源码副本）。
 - 液态玻璃的折射/色散滤镜思路参考并改编自 [rdev/liquid-glass-react](https://github.com/rdev/liquid-glass-react)（MIT，© Max Rovensky，其又改编自 shuding/liquid-glass）。
-- 完整第三方许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+- 第三方来源、许可和待确认状态见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 ## License
 
-本插件代码以 [MIT License](LICENSE) 发布。
+维护者有权许可的原创贡献以 [MIT License](LICENSE) 发布。第三方代码遵循各自条款；该 MIT 许可不授予 `ascii-sharks` 上游代码及其打包副本的使用或再分发权利。`package.json` 的许可字段指向 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)，以说明整个包的授权范围。
 
-⚠️ 注意：`src/ascii-sharks/` 来自上游 ascii-sharks 仓库，该仓库**没有声明许可证**。维护者正在联系上游作者取得许可（2026-10）；**在许可确认前，请勿再分发本仓库或插件包**。若最终无法取得许可，该目录需替换为有授权的实现。详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+`src/ascii-sharks/` 来自上游 ascii-sharks 仓库，该仓库**没有声明许可证**（核查日期：2026-10-23）。维护者已在 [上游 Issue #1](https://github.com/stackedlol/ascii-sharks/issues/1#issuecomment-6355506507) 申请 MIT 授权，范围包括已引入的版本、后续修改、源码和插件/预览产物分发，以及下游用户权利。**申请已提交，授权尚未取得；在许可确认前，请勿再分发本仓库或插件包**。获得明确授权后，应按作者实际同意的条款更新本声明并随安装包保留完整版权及许可文本；若最终无法取得许可，需替换相关源码并重新构建产物。
