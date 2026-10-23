@@ -36,6 +36,7 @@ const bundle = await build({
             time = 0;
             pointer = { active: false, x: 0, y: 0 };
             resize() {}
+            configure() {}
             splash() {}
             step(dt) { this.time += dt; }
           }
@@ -527,4 +528,53 @@ test('pane repair releases old filters and capture contexts at the default canva
   }
   env.unmount();
   assert.equal(env.document.body.children.filter(node => node.id === 'dsh-liquid-filter-svg').length, 0);
+});
+
+test('live controls keep one renderer and glass disabled stops snapshot polling', t => {
+  const env = browser(); t.after(() => env.unmount()); env.mount();
+  const canvas = env.canvas;
+  const worker = env.workers[0];
+  env.ocean.setPreferences({fishCount:0,sharkCount:0,speed:2,maxFps:15,interactive:false});
+  assert.equal(env.canvas,canvas);
+  assert.equal(env.workers.length,1);
+  const config=worker.messages.findLast(m=>m.type==='configure');
+  assert.equal(config.fishCount,0);
+  assert.equal(config.sharks.length,0);
+  assert.equal(config.speed,2);
+  assert.equal(config.interactive,false);
+  assert.equal(worker.messages.findLast(m=>m.type==='fps').fps,15);
+  const pending=worker.messages.findLast(m=>m.type==='snapshot');
+  env.ocean.setPreferences({glass:false});
+  const stale=env.replySnapshot(pending,30);
+  assert.equal(stale.closed,true);
+  assert.equal(env.capture,null);
+  assert.equal(env.document.getElementById('dsh-liquid-filter-svg'),null);
+  const requests=worker.messages.filter(m=>m.type==='snapshot').length;
+  for(let i=0;i<5;i++){env.tick(120);env.tick(700)}
+  assert.equal(worker.messages.filter(m=>m.type==='snapshot').length,requests);
+  env.ocean.setPreferences({glass:true});
+  assert.ok(env.capture);
+  assert.ok(worker.messages.filter(m=>m.type==='snapshot').length>requests);
+  env.ocean.setMode('static');
+  const resumes=worker.messages.filter(m=>m.type==='resume').length;
+  env.ocean.setPreferences({fishCount:300,sharkCount:12,maxFps:30});
+  assert.equal(worker.messages.filter(m=>m.type==='resume').length,resumes);
+  env.ocean.resetPreferences();
+  assert.equal(env.ocean.getSnapshot().clarity,50);
+  assert.equal(env.ocean.getSnapshot().maxFps,60);
+  assert.equal(env.ocean.getSnapshot().fishCount,null);
+});
+
+for (const worker of ['ok','unsupported']) test(`${worker}: simultaneous static mode and population change renders the new world`, t=>{
+  const env=browser({worker});t.after(()=>env.unmount());env.mount();
+  const before=env.ocean.frames;
+  const count=env.workers[0]?.messages.length??0;
+  env.ocean.setPreferences({mode:'static',fishCount:0,sharkCount:0});
+  if(worker==='ok') {
+    const messages=env.workers[0].messages.slice(count);
+    assert.ok(messages.findIndex(m=>m.type==='pause')<messages.findIndex(m=>m.type==='configure'));
+  } else {
+    assert.ok(env.ocean.frames>before,'the newly configured static scene must redraw');
+    assert.equal(env.animationFrames.size,0);
+  }
 });

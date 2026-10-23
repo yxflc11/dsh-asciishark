@@ -15,7 +15,7 @@
  */
 import { OceanEngine, type SharkSpec } from "./ascii-sharks";
 import { isInteractiveTarget } from "./ascii-sharks/engine";
-import { readPreferences, savePreferences, settingsComponent, PREFERENCES_KEY, type OceanMode } from "./preferences";
+import { readPreferences, savePreferences, settingsComponent, normalizePreferences, DEFAULT_PREFERENCES, PREFERENCES_KEY, type OceanMode, type OceanPreferences } from "./preferences";
 import { WORKER_SOURCE } from "./worker-source.generated";
 
 const PACKAGE_NAME = "@local/dsh-client-ui-ascii-ocean";
@@ -39,6 +39,9 @@ const SHARKS: SharkSpec[] = [
   { kind: "mako", size: 0.54 },
   { kind: "zebra", size: 0.46 },
 ];
+
+const sharksFor = (count: number): SharkSpec[] =>
+  Array.from({ length: count }, (_, index) => ({ ...SHARKS[index % SHARKS.length] }));
 
 type Scheme = "light" | "dark";
 
@@ -89,19 +92,36 @@ const VEIL: Record<Scheme, string> = {
 const INK_FILTER = "invert(1) hue-rotate(180deg) saturate(1.8) contrast(1.35) brightness(0.96)";
 
 const CSS = `
-.dsh-ocean-settings { max-width: 720px; color: inherit; font: inherit; }
-.dsh-ocean-settings fieldset { border: 0; padding: 0; margin: 0 0 24px; min-width: 0; }
-.dsh-ocean-settings legend { font-weight: 600; margin-bottom: 12px; }
+.dsh-ocean-settings { max-width: 800px; color: inherit; font: inherit; --ocean-control-bg: rgba(255,255,255,.94); }
+body[data-ds-dark-theme] .dsh-ocean-settings { --ocean-control-bg: rgba(25,29,36,.95); }
+.dsh-ocean-settings fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.dsh-ocean-settings legend { font-weight: 600; padding: 0; margin-bottom: 12px; }
 .dsh-ocean-modes { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
-.dsh-ocean-mode { display: flex; gap: 9px; align-items: flex-start; padding: 14px 12px; border: 1px solid #8885; border-radius: 12px; cursor: pointer; }
-.dsh-ocean-mode:has(:checked) { border-color: #4f7edb; background: rgba(100,150,240,.1); }
-.dsh-ocean-settings input { accent-color: #4279dc; flex: none; margin-top: 4px; }
-.dsh-ocean-settings input:focus-visible { outline: 2px solid #4279dc; outline-offset: 4px; }
+.dsh-ocean-mode { display: flex; gap: 9px; align-items: flex-start; padding: 14px 12px; border: 1px solid #8885; background: var(--ocean-control-bg); border-radius: 10px; cursor: pointer; }
+.dsh-ocean-mode:has(:checked) { border-color: #4f7edb; box-shadow: inset 0 0 0 1px #4f7edb; }
+.dsh-ocean-settings input { accent-color: #4279dc; flex: none; margin: 3px 0 0; }
+.dsh-ocean-settings :is(input,select,button):focus-visible { outline: 2px solid #4279dc; outline-offset: 3px; }
 .dsh-ocean-settings strong { display: block; font-weight: 600; }
-.dsh-ocean-settings small { display: block; margin-top: 5px; font-size: 13px; line-height: 1.5; opacity: .75; }
-.dsh-ocean-reading { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
-.dsh-ocean-status { margin-top: 22px; font-size: 13px; line-height: 1.6; opacity: .75; }
-@media (max-width: 600px) { .dsh-ocean-modes { grid-template-columns: 1fr; } }
+.dsh-ocean-settings small { display: block; margin-top: 6px; font-size: 12px; line-height: 1.5; opacity: .75; }
+.dsh-ocean-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; }
+.dsh-ocean-settings .dsh-ocean-group { padding: 18px; border: 1px solid #8884; border-radius: 12px; background: var(--ocean-control-bg); }
+.dsh-ocean-group legend { float: left; width: 100%; margin-bottom: 16px; }
+.dsh-ocean-control { clear: both; margin-bottom: 20px; }
+.dsh-ocean-control:last-child { margin-bottom: 0; }
+.dsh-ocean-label { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.dsh-ocean-label output { font-variant-numeric: tabular-nums; font-size: 13px; white-space: nowrap; }
+.dsh-ocean-settings input[type="range"] { display: block; width: 100%; min-height: 28px; margin: 7px 0 0; cursor: pointer; }
+.dsh-ocean-settings input:disabled { cursor: default; opacity: .45; }
+.dsh-ocean-check,.dsh-ocean-auto { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; line-height: 1.5; }
+.dsh-ocean-check { margin-top: 18px; }
+.dsh-ocean-auto { clear: both; font-size: 13px; margin-bottom: 12px; }
+.dsh-ocean-settings select { display: block; width: 100%; margin-top: 8px; padding: 8px; border: 1px solid #8887; border-radius: 6px; color: inherit; background: var(--ocean-control-bg); font: inherit; }
+.dsh-ocean-preview-note { font-size: 13px; margin: 20px 0; line-height: 1.6; }
+.dsh-ocean-footer { display: flex; gap: 20px; align-items: center; justify-content: space-between; padding-top: 16px; }
+.dsh-ocean-status { margin: 0; font-size: 12px; line-height: 1.6; }
+.dsh-ocean-footer button { flex: none; border: 1px solid #8886; border-radius: 7px; padding: 8px 12px; background: var(--ocean-control-bg); color: inherit; cursor: pointer; font: inherit; font-size: 13px; }
+@media (max-width: 680px) { .dsh-ocean-grid { grid-template-columns: 1fr; } }
+@media (max-width: 460px) { .dsh-ocean-modes { grid-template-columns: 1fr; } .dsh-ocean-footer { align-items: flex-start; flex-direction: column; } }
 
 #root {
   position: relative;
@@ -191,7 +211,8 @@ interface OceanHandle {
   setScheme(next: Scheme): void;
   toggle(): boolean;
   setMode(mode: OceanMode): void;
-  setReadable(readable: boolean): void;
+  setPreferences(patch: Partial<OceanPreferences>): void;
+  resetPreferences(): void;
   getSnapshot(): any;
   subscribe(listener: () => void): () => void;
   destroy(): void;
@@ -370,17 +391,18 @@ function createOcean(ctx: any): OceanHandle {
   const applyScopes = (next: Targets) => {
     if (preferences.mode === "off") return;
     const values = Object.fromEntries(Object.entries(CONVERSATION_TOKENS).map(([name, modes]) => [name, modes[scheme]]));
-    if (preferences.readable) {
-      values["--dsw-alias-bg-base"] = quietPage()
-        ? (scheme === "light" ? "rgb(250, 251, 253)" : "rgb(15, 19, 25)")
-        : (scheme === "light" ? "rgba(255, 255, 255, 0.78)" : "rgba(9, 12, 17, 0.8)");
-      values["--dsw-alias-bg-layer-1"] = scheme === "light" ? "rgba(255, 255, 255, 0.92)" : "rgba(28, 32, 40, 0.94)";
-    }
+    const alpha = (100 - preferences.clarity) / 100;
+    const quiet = quietPage() && !document.querySelector(".dsh-ocean-settings");
+    values["--dsw-alias-bg-base"] = quiet
+      ? (scheme === "light" ? "rgb(250, 251, 253)" : "rgb(15, 19, 25)")
+      : (scheme === "light" ? `rgba(255, 255, 255, ${alpha})` : `rgba(9, 12, 17, ${alpha})`);
     scope(next.conversation, values);
-    scope(next.sidebar, Object.fromEntries(Object.entries(SIDEBAR_TOKENS).map(([name, modes]) => [name, modes[scheme]])));
-    next.sidebar.classList.add(GLASS_CLASS);
-    next.sidebar.classList.toggle("dsh-liquid-compact", next.sidebar.getBoundingClientRect().width < 140);
-    glassEls.add(next.sidebar);
+    if (preferences.glass) {
+      scope(next.sidebar, Object.fromEntries(Object.entries(SIDEBAR_TOKENS).map(([name, modes]) => [name, modes[scheme]])));
+      next.sidebar.classList.add(GLASS_CLASS);
+      next.sidebar.classList.toggle("dsh-liquid-compact", next.sidebar.getBoundingClientRect().width < 140);
+      glassEls.add(next.sidebar);
+    }
     if (!savedFrame) savedFrame = { el: next.frame, value: next.frame.style.getPropertyValue("background"), priority: next.frame.style.getPropertyPriority("background") };
     next.frame.style.setProperty("background", "transparent", "important");
   };
@@ -401,7 +423,7 @@ function createOcean(ctx: any): OceanHandle {
   };
   const ensurePane = () => {
     const side = targets?.sidebar;
-    if (!side || preferences.mode === "off") return;
+    if (!side || preferences.mode === "off" || !preferences.glass) return;
     if (!pane?.isConnected || pane.parentElement !== side) {
       removePane();
       pane = document.createElement("div"); pane.className = PANE_CLASS;
@@ -450,8 +472,9 @@ function createOcean(ctx: any): OceanHandle {
   const startLocalEngine = () => {
     if (!canvas) return;
     fallback = true; notify();
-    engine = new OceanEngine(canvas, SHARKS, {
-      maxFps: 60, maxDpr: 1.5, paused: !shouldRun(), initialStatic: preferences.mode === "static",
+    engine = new OceanEngine(canvas, sharksFor(preferences.sharkCount), {
+      fishCount: preferences.fishCount, speed: preferences.speed, interactive: preferences.interactive,
+      maxFps: preferences.maxFps, maxDpr: 1.5, paused: !shouldRun(), initialStatic: preferences.mode === "static",
       onFrame: () => {
         if (!shouldRun()) { invalidateCapture(); requestSnapshot(); }
       },
@@ -470,7 +493,7 @@ function createOcean(ctx: any): OceanHandle {
         if (worker !== next || !inFlight || data.requestId !== inFlight.id) { data.bitmap?.close(); return; }
         const revision = inFlight.revision; inFlight = null;
         workerFrames = data.frames;
-        if (revision === captureRevision && preferences.mode !== "off" && !document.hidden) {
+        if (revision === captureRevision && preferences.mode !== "off" && preferences.glass && !document.hidden) {
           if (data.bitmap) drawSnapshot(data.bitmap, data.frames);
           else if (data.skipped && data.reason === "unchanged") captureDirty = false;
         } else data.bitmap?.close();
@@ -481,7 +504,8 @@ function createOcean(ctx: any): OceanHandle {
         if (worker !== next) return;
         stopWorker(); restartCanvasForFallback(); startLocalEngine(); requestSnapshot();
       };
-      next.postMessage({ type: "init", canvas: off, ...workerSize(), dpr: workerDpr(), maxFps: 60, sharks: SHARKS,
+      next.postMessage({ type: "init", canvas: off, ...workerSize(), dpr: workerDpr(), maxFps: preferences.maxFps, sharks: sharksFor(preferences.sharkCount),
+        fishCount: preferences.fishCount, speed: preferences.speed, interactive: preferences.interactive,
         fontFamily: getComputedStyle(canvas).fontFamily, reducedMotion: motion?.matches === true,
         paused: !shouldRun(), initialStatic: preferences.mode === "static" }, [off]);
       fallback = false; notify(); syncPlayback();
@@ -528,7 +552,7 @@ function createOcean(ctx: any): OceanHandle {
     context.restore(); lastCapturedFrame = frames; captureDirty = false;
   };
   const requestSnapshot = () => {
-    if (disposed || preferences.mode === "off" || !capture || !pane?.isConnected || document.hidden || !targets) return;
+    if (disposed || preferences.mode === "off" || !preferences.glass || !capture || !pane?.isConnected || document.hidden || !targets) return;
     if (!shouldRun() && !captureDirty) return;
     if (worker) {
       if (inFlight) return;
@@ -539,28 +563,28 @@ function createOcean(ctx: any): OceanHandle {
         cw: Math.max(16, Math.round(rect.width / 2)), ch: Math.max(16, Math.round(rect.height / 2)), since: lastCapturedFrame });
     } else captureBackdropLocal();
   };
-  const syncPlayback = () => {
+  const syncPlayback = (refresh = true) => {
     const running = shouldRun();
     if (running !== playing) {
       playing = running;
       post({ type: running ? "resume" : "pause" });
       if (running) engine?.resume(); else engine?.pause();
     }
-    if (running && !captureTimer) captureTimer = window.setInterval(requestSnapshot, 120);
-    else if (!running && captureTimer) { clearInterval(captureTimer); captureTimer = 0; }
+    if (running && preferences.glass && !captureTimer) captureTimer = window.setInterval(requestSnapshot, 120);
+    else if ((!running || !preferences.glass) && captureTimer) { clearInterval(captureTimer); captureTimer = 0; }
     // One final snapshot on pause; no periodic messages in a static/hidden tab.
-    invalidateCapture(); requestSnapshot();
+    if (refresh) { invalidateCapture(); requestSnapshot(); }
   };
 
   let lastPointerPost = 0;
   const onPointerMove = (event: PointerEvent) => {
-    if (!shouldRun()) return;
+    if (!shouldRun() || !preferences.interactive) return;
     const now = performance.now(); if (now - lastPointerPost < 50) return;
     lastPointerPost = now;
     post({ type: "pointer", x: event.clientX, y: event.clientY, active: event.pointerType !== "touch" && !isInteractiveTarget(event) });
   };
   const onPointerDown = (event: PointerEvent) => {
-    if (!shouldRun() || (event.button !== undefined && event.button !== 0) || isInteractiveTarget(event)) return;
+    if (!shouldRun() || !preferences.interactive || (event.button !== undefined && event.button !== 0) || isInteractiveTarget(event)) return;
     post({ type: "splash", x: event.clientX, y: event.clientY });
   };
   const onPointerLeave = () => post({ type: "pointer", x: 0, y: 0, active: false });
@@ -610,19 +634,36 @@ function createOcean(ctx: any): OceanHandle {
     if (targets) { applyScopes(targets); rebuildFilter(); invalidateCapture(); requestSnapshot(); }
   };
   const ensure = () => { setScheme(currentScheme(ctx)); return mount(); };
-  const applyPreferences = () => {
+  const applyPreferences = (previous: OceanPreferences) => {
+    if (preferences.glass !== previous.glass) { removePane(); restoreScopes(); }
     if (wrap) wrap.style.display = preferences.mode === "off" ? "none" : "";
     if (preferences.mode === "off") { removePane(); restoreScopes(); }
     else if (targets) { applyScopes(targets); ensurePane(); }
-    syncPlayback(); notify();
+    // Pause first when a storage update changes mode and population together.
+    syncPlayback(false);
+    // Reconfigure the running world; keep its canvas, time and pause state.
+    const config: { fishCount?: number | null; sharks?: SharkSpec[]; speed?: number; interactive?: boolean } = {};
+    if (preferences.fishCount !== previous.fishCount) config.fishCount = preferences.fishCount;
+    if (preferences.sharkCount !== previous.sharkCount) config.sharks = sharksFor(preferences.sharkCount);
+    if (preferences.speed !== previous.speed) config.speed = preferences.speed;
+    if (preferences.interactive !== previous.interactive) config.interactive = preferences.interactive;
+    if (Object.keys(config).length) { post({ type: "configure", ...config }); engine?.configure(config); }
+    if (preferences.maxFps !== previous.maxFps) { post({ type: "fps", fps: preferences.maxFps }); engine?.setMaxFps(preferences.maxFps); }
+    if (!preferences.interactive) onPointerLeave();
+    invalidateCapture(); requestSnapshot(); notify();
+  };
+  const setPreferences = (patch: Partial<OceanPreferences>) => {
+    const previous = preferences;
+    preferences = normalizePreferences({ ...preferences, ...patch });
+    saved = savePreferences(preferences); applyPreferences(previous);
   };
   const setMode = (mode: OceanMode) => {
-    if (!["dynamic", "static", "off"].includes(mode)) return;
-    preferences = { ...preferences, mode }; saved = savePreferences(preferences); applyPreferences();
+    if (["dynamic", "static", "off"].includes(mode)) setPreferences({ mode });
   };
   const onStorage = (event: StorageEvent) => {
     if (event.key !== PREFERENCES_KEY && event.key !== null) return;
-    preferences = readPreferences(); saved = true; applyPreferences();
+    const previous = preferences;
+    preferences = readPreferences(); saved = true; applyPreferences(previous);
   };
   window.addEventListener("storage", onStorage);
   const offPanel = ctx.layout?.panelInfo?.subscribe(() => { if (targets) applyScopes(targets); });
@@ -632,8 +673,8 @@ function createOcean(ctx: any): OceanHandle {
     get frames() { return worker ? workerFrames : (engine?.frames ?? 0); },
     getSnapshot: () => state,
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
-    setMode,
-    setReadable(readable: boolean) { preferences = { ...preferences, readable }; saved = savePreferences(preferences); applyPreferences(); },
+    setMode, setPreferences,
+    resetPreferences() { setPreferences({ ...DEFAULT_PREFERENCES }); },
     mount, ensure, setScheme,
     toggle() { const enabled = preferences.mode === "off"; setMode(enabled ? "dynamic" : "off"); return enabled; },
     destroy() {
