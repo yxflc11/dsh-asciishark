@@ -16,6 +16,8 @@
 import { OceanEngine, type SharkSpec } from "./ascii-sharks";
 import { isInteractiveTarget } from "./ascii-sharks/engine";
 import { readPreferences, savePreferences, settingsComponent, normalizePreferences, DEFAULT_PREFERENCES, PREFERENCES_KEY, type OceanMode, type OceanPreferences } from "./preferences";
+import { GlassCapture } from "./glass-capture";
+import { INK_FILTER } from "./ocean-colors";
 import { WORKER_SOURCE } from "./worker-source.generated";
 
 const PACKAGE_NAME = "@local/dsh-client-ui-ascii-ocean";
@@ -89,7 +91,6 @@ const VEIL: Record<Scheme, string> = {
   dark: "radial-gradient(ellipse 85% 75% at 55% 45%, rgba(2,4,8,0.44), rgba(2,4,8,0.13) 62%, rgba(2,4,8,0.02))",
 };
 
-const INK_FILTER = "invert(1) hue-rotate(180deg) saturate(1.8) contrast(1.35) brightness(0.96)";
 
 const CSS = `
 /* Settings-only surfaces: ocean, conversation and sidebar materials stay unchanged. */
@@ -376,7 +377,9 @@ function createOcean(ctx: any): OceanHandle {
   const glassEls = new Set<HTMLElement>();
   let savedFrame: { el: HTMLElement; value: string; priority: string } | null = null;
   let pane: HTMLDivElement | null = null;
-  let capture: HTMLCanvasElement | null = null;
+  let capture: HTMLCanvasElement | HTMLImageElement | null = null;
+  let glassCapture: GlassCapture | null = null;
+  let glassCaptureFailed = false;
   let captureCtx: CanvasRenderingContext2D | null = null;
   let filterSvg: SVGSVGElement | null = null;
   let mapUrl = "";
@@ -444,6 +447,7 @@ function createOcean(ctx: any): OceanHandle {
   };
 
   const removePane = () => {
+    glassCapture?.destroy(); glassCapture = null;
     sidebarObserver.disconnect();
     pane?.remove(); filterSvg?.remove();
     pane = null; capture = null; captureCtx = null; filterSvg = null;
@@ -464,7 +468,18 @@ function createOcean(ctx: any): OceanHandle {
       removePane();
       pane = document.createElement("div"); pane.className = PANE_CLASS;
       pane.setAttribute("aria-hidden", "true");
-      capture = document.createElement("canvas"); capture.className = CAPTURE_CLASS;
+      capture = document.createElement("canvas");
+      if (worker && !glassCaptureFailed && GlassCapture.supported()) {
+        const image = document.createElement("img");
+        try {
+          glassCapture = new GlassCapture(image, () => {
+            glassCaptureFailed = true;
+            removePane(); ensurePane(); requestSnapshot();
+          });
+          capture = image;
+        } catch { glassCaptureFailed = true; }
+      }
+      capture.className = CAPTURE_CLASS;
       const tint = document.createElement("div"); tint.className = TINT_CLASS;
       pane.append(capture, tint); side.prepend(pane);
       filterSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -530,7 +545,7 @@ function createOcean(ctx: any): OceanHandle {
         if (data?.type === "metrics") {
           if (worker !== next) return;
           const request = metricRequests.get(data.requestId);
-          if (request) { clearTimeout(request.timer); metricRequests.delete(data.requestId); request.resolve(data); }
+          if (request) { clearTimeout(request.timer); metricRequests.delete(data.requestId); request.resolve({ ...data, glassBackend: glassCapture ? "image" : "canvas", glassBusy: glassCapture?.busy ?? false }); }
           return;
         }
         if (data?.type !== "snapshot") return;
@@ -538,7 +553,7 @@ function createOcean(ctx: any): OceanHandle {
         const revision = inFlight.revision; inFlight = null;
         workerFrames = data.frames;
         if (revision === captureRevision && preferences.mode !== "off" && preferences.glass && !document.hidden) {
-          if (data.bitmap) drawSnapshot(data.bitmap, data.frames);
+          if (data.bitmap) drawSnapshot(data.bitmap, data.frames, revision);
           else if (data.skipped && data.reason === "unchanged") captureDirty = false;
         } else data.bitmap?.close();
         // Coalesce changes during transport; never queue a second request.
@@ -546,7 +561,7 @@ function createOcean(ctx: any): OceanHandle {
       };
       next.onerror = () => {
         if (worker !== next) return;
-        stopWorker(); restartCanvasForFallback(); startLocalEngine(); requestSnapshot();
+        stopWorker(); restartCanvasForFallback(); removePane(); startLocalEngine(); ensurePane(); requestSnapshot();
       };
       next.postMessage({ type: "init", canvas: off, ...workerSize(), dpr: workerDpr(), maxFps: preferences.maxFps, sharks: sharksFor(preferences.sharkCount),
         fishCount: preferences.fishCount, speed: preferences.speed, interactive: preferences.interactive,
@@ -560,14 +575,25 @@ function createOcean(ctx: any): OceanHandle {
   };
 
   const captureContext = (cw: number, ch: number) => {
-    if (!capture) return null;
+    if (!(capture instanceof HTMLCanvasElement)) return null;
     if (capture.width !== cw || capture.height !== ch) {
       capture.width = cw; capture.height = ch; captureCtx = null;
     }
     if (!captureCtx || captureCtx.canvas !== capture) captureCtx = capture.getContext("2d");
     return captureCtx;
   };
-  const drawSnapshot = (bitmap: ImageBitmap, frames: number) => {
+  const drawSnapshot = (bitmap: ImageBitmap, frames: number, revision: number) => {
+    if (glassCapture && capture && pane?.isConnected && targets) {
+      const current = glassCapture;
+      current.render(bitmap, scheme, bitmap.width, bitmap.height,
+        () => current === glassCapture && revision === captureRevision && preferences.mode !== "off" && preferences.glass && !document.hidden,
+        accepted => {
+          if (current !== glassCapture || disposed) return;
+          if (accepted) { lastCapturedFrame = frames; captureDirty = false; }
+          if (captureDirty) requestSnapshot();
+        });
+      return; // The encoder worker owns and closes the transferred bitmap.
+    }
     try {
       if (!capture || !pane?.isConnected || !targets) return;
       const rect = targets.sidebar.getBoundingClientRect();
@@ -599,7 +625,7 @@ function createOcean(ctx: any): OceanHandle {
     if (disposed || preferences.mode === "off" || !preferences.glass || !capture || !pane?.isConnected || document.hidden || !targets) return;
     if (!shouldRun() && !captureDirty) return;
     if (worker) {
-      if (inFlight) return;
+      if (inFlight || glassCapture?.busy) return;
       const rect = targets.sidebar.getBoundingClientRect();
       if (rect.width < 4 || rect.height < 4) return;
       inFlight = { id: ++requestId, revision: captureRevision };
@@ -659,7 +685,11 @@ function createOcean(ctx: any): OceanHandle {
     canvas = document.createElement("canvas"); canvas.id = CANVAS_ID; canvas.setAttribute("aria-hidden", "true");
     veil = document.createElement("div"); veil.id = VEIL_ID; veil.style.background = VEIL[scheme];
     wrap.append(canvas, veil); (document.body ?? document.documentElement).prepend(wrap);
-    if (!startWorker()) startLocalEngine();
+    if (!startWorker()) {
+      // A remounted surface may still have an image-backed glass pane. The
+      // local renderer needs its original Canvas capture path instead.
+      removePane(); startLocalEngine();
+    }
   };
   const mount = (): boolean => {
     if (disposed || !document.body) return false;

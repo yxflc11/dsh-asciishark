@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-client-ui-ascii-ocean",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "private": true,
   "description": "ASCII shark ocean rendered in a worker, behind an Apple Liquid Glass sidebar",
   "type": "module",
