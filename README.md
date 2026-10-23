@@ -4,7 +4,7 @@
 
 > **上游授权待确认（2026-10-23）**：已向作者提交 [MIT 授权申请](https://github.com/stackedlol/ascii-sharks/issues/1#issuecomment-6355506507)，尚未获得授权。维护者原创贡献的 MIT 许可不覆盖上游代码；在授权确认前，请勿再分发本仓库或插件包。各部分的授权范围见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
-这是一个 DSH 客户端插件包：海洋铺在整扇窗的底层，**左侧边栏**是苹果 Liquid Glass 风格的贴边液态玻璃窗（SVG 位移折射 + 色散边 + 模糊背景，无圆角/无内缩/无光晕），**对话主栏**是更清透的玻璃，鱼群和鲨鱼在两栏后面游动；右侧文档/终端栏、菜单、弹窗保持原本的不透明表面。
+这是一个 DSH 客户端插件包：海洋铺在整扇窗的底层，**左侧边栏**是苹果 Liquid Glass 风格的贴边液态玻璃窗（SVG 位移折射 + 色散边 + 模糊背景，无圆角/无内缩/无光晕），**对话主栏**使用可调的半透明阅读底色，鱼群和鲨鱼在两栏后面游动；右侧文档/终端栏、菜单、弹窗保持原本的不透明表面。
 
 | 浅色主题（水墨玻璃） | 深色主题（深海玻璃） |
 | --- | --- |
@@ -14,8 +14,8 @@
 
 | 环境 | 状态 | 说明 |
 | --- | --- | --- |
-| DSH Desktop · macOS | ✅ 已实测（0.10.0） | 本仓库的开发/验证环境 |
-| DSH Desktop · Windows | ✅ 设计兼容 | 同一套 Web 前端与 DOM 槽位，无平台相关 API；已提供 PowerShell 安装脚本。若布局有细微差异欢迎开 issue |
+| DSH Desktop · macOS | ✅ 开发与验证环境 | 本仓库的开发/验证环境 |
+| DSH Desktop · Windows | ⚠️ 设计兼容、未实机验证 | 同一套 Web 前端与 DOM 槽位，无平台相关 API；已提供 PowerShell 安装脚本。若布局有细微差异欢迎开 issue |
 | DSH Web（浏览器，任意系统） | ✅ 兼容 | Chrome / Edge 等 Chromium 内核；无需安装脚本，按下面的手动步骤把插件放到 profile 即可 |
 | DSH Desktop · Linux | ⚠️ 未验证 | 布局与 Web 一致，理论可用；暂无安装脚本，可参照手动安装 |
 
@@ -24,16 +24,17 @@
 ## 行为
 
 - **左侧栏（New Session 那一栏）= 贴边液态玻璃窗**：铺满整列、无圆角、无内缩、无投影、无光晕、无 1px 高光边；玻璃本体用**逐像素位移贴图 + SVG 滤镜**做边缘折射（`feDisplacementMap`，双通道不同缩放产生色散边），玻璃底图来自对海洋画布的**低帧率快照**，再叠加一层很淡的冷色玻璃色调；文字保持清晰。
-- **对话主栏**：更清透的玻璃（浅色底色 50%），鱼群、鲨鱼和水花都能在消息背后看见，阅读不受影响。
+- **对话主栏**：默认启用阅读底色，降低文字后方海洋的明暗变化；关闭阅读底色可恢复原先 50% 的清透效果。插件和设置页在启用阅读底色时使用稳定底色，侧栏玻璃继续显示。
 - **右侧栏 / 菜单 / 弹窗**：保持原生不透明表面，不受影响。
 - **6 种鲨鱼**：锤头鲨 `hammerhead`、经典鲨 `classic`、虎鲨 `tiger`、长尾鲨 `thresher`、灰鲭鲨 `mako`、斑竹鲨 `zebra`，体型 0.9→0.46 递减；鱼群照旧成群、报警、被追捕并重新入场。
 - **跟随主题自动适配**，切换外观时实时换挡：
   - 深色主题：原版彩色 ASCII 海洋 + 烟熏玻璃面板 + 深色液态玻璃左栏。
   - 浅色主题：动画反相成「白纸水墨」，左栏是带冷色折射的浅色玻璃，对话栏是半透明宣纸。
-- 指针移动时鱼群躲避，点击水面溅起水花（canvas 为 `pointer-events: none`，不影响 UI 点击）。
-- 窗口隐藏/切后台自动暂停；`prefers-reduced-motion: reduce` 时只画静止帧（上游库自带行为）。
+- 指针移动时鱼群躲避，点击背景空白处溅起水花；按钮、链接、输入框、可编辑区和其他交互控件不会触发水花，右键/中键也不会。
+- **插件 → 海洋背景**：选择动态、静态或关闭，选择保存在当前客户端。动态目标为 60fps；静态冻结当前海洋与玻璃；关闭会恢复原背景与样式。系统减少动态效果开启时，动态模式也显示静态画面。
+- 窗口隐藏/切后台自动暂停；暂停时不周期请求快照，尺寸或主题变化只刷新所需画面，恢复焦点不会覆盖用户的静态/关闭选择。
 - 卸载时逐项还原被改动的元素样式，实测热插拔后 DOM、样式、token 全部恢复原状。
-- 性能：海洋模拟与绘制全部在 **Web Worker + OffscreenCanvas** 里跑（动画稳定 60fps，主线程几乎不参与）；玻璃滤镜约 8fps 对快照重算；窗口失焦自动暂停（详见下方性能优化）。
+- 性能：海洋模拟与绘制全部在 **Web Worker + OffscreenCanvas** 里跑（目标 60fps；实际帧率取决于设备负载）；玻璃滤镜约 8fps 对快照重算；窗口失焦自动暂停（详见下方性能优化）。
 
 ## 安装（DSH Desktop）
 
@@ -53,7 +54,9 @@ cd dsh-asciishark
 powershell -ExecutionPolicy Bypass -File .\install-desktop.ps1
 ```
 
-仓库里已经提交了构建好的 `lib/`，**克隆后无需构建即可安装**。脚本把包复制到：
+仓库里已经提交了构建好的 `lib/`，**完整克隆后无需构建或安装 npm 依赖即可安装**。四个入口共用 `scripts/desktop.mjs` 和随包提供的 YAML 解析器，不要只下载单个脚本。需要 Node.js 18+；macOS 脚本也会尝试 DSH 内置 Node。可用 `DSH_NODE_BIN` 指定可执行文件，`DSH_PROFILE_DIR` 指定 profile。
+
+脚本先检查所有源文件与 YAML，暂存并校验新包，把原配置及旧包备份到 profile 下的 `.ascii-ocean-backups/`，再替换；失败会回滚。匹配完整插件 id 和名称，保留其他配置、注释与标签。脚本把包复制到：
 
 - macOS/Linux：`~/.dsh/profiles/desktop/node_modules/@local/dsh-client-ui-ascii-ocean/`
 - Windows：`%USERPROFILE%\.dsh\profiles\desktop\node_modules\@local\dsh-client-ui-ascii-ocean\`
@@ -83,7 +86,7 @@ npm install
 npm run build
 ```
 
-开发时可运行 `npm test`。回归测试覆盖 Worker 启动失败后的降级与资源清理、隐藏/焦点/可见性变化及重挂载时的暂停状态，以及减少动态效果模式下窗口缩放后的侧栏截图刷新。
+开发时运行 `npm test`。回归覆盖安装失败回滚与精确 YAML 编辑、Worker 故障降级/资源清理、暂停及重挂载、60/120/144Hz 调度输入、静态缩放、交互控件过滤和快照回复。浏览器验收还需覆盖真实 Worker、模式持久化、主题、侧栏重建及 DSH 插件设置入口。
 
 ## 卸载
 
@@ -99,7 +102,7 @@ Windows：
 powershell -ExecutionPolicy Bypass -File .\uninstall-desktop.ps1
 ```
 
-脚本会先移除 patch 行、等 HMR 卸载插件并还原 DOM 样式，再删除包目录（避免与热重载竞争）。卸载后立即恢复原样。
+脚本先精确移除本插件的配置项，保留同组其他插件，等待 HMR 处理，再将包归档到恢复备份目录。原配置和包均可恢复；如果客户端仍显示旧效果，刷新页面。
 
 ## 性能优化
 
@@ -110,17 +113,12 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-desktop.ps1
 - **半分辨率滤镜 + transform 放大**：滤镜光栅面积降到 1/4（Retina 收益最大），因为本来就是模糊玻璃，观感几乎无差。
 - **无 backdrop-filter**：不再实时采样整页背景，少一次全屏模糊合成。
 - **DPR 上限 1.5**：Retina 下海洋画布像素减少约 44%。
-- **失焦/隐藏暂停**：窗口失焦、最小化时 worker 停止渲染（省电）。
+- **失焦/隐藏/静态暂停**：停止渲染循环和快照轮询；尺寸或主题变化触发一次必要更新。
+- **快照合并**：最多一个请求在途；尺寸变化使缓存失效，旧尺寸回复直接释放，新尺寸只补拍一次。
+- **帧率调度**：主线程降级引擎在高刷新率下仍遵守 60fps 上限，非整除目标保留时间余量；Worker 保留计时相位。
 - **滤镜 2 次位移**（R + GB 双通道，取代 3 次），保留色散边但开销更低。
 
-实测（headless Chromium，1440×900，6 鲨 + 200+ 鱼）：
-
-| 指标 | 0.8.x | 0.9.0 | **0.10.0** |
-| --- | --- | --- | --- |
-| 动画帧率 | 30fps | 30fps | **~60fps** |
-| 主线程忙碌占比 | ~56% | ~20% | **~0.5%** |
-| 页面 rAF p99 | 33.4ms | 17.7ms | **17.7ms（稳定 60fps）** |
-| 滤镜重算频率 | 30fps | ~8fps | **~8fps** |
+性能验证区分隔离浏览器和真实 DSH：受控调度测试用于核对帧率上限，不能代表真实高刷屏实测；历史 headless 主线程占用也不代表整机 CPU、GPU 或功耗。本版没有降低默认 60fps、DPR 上限、鲨鱼采样或玻璃滤镜；未采用无稳定收益的骨架预计算原型。
 
 ## 独立预览
 
@@ -136,7 +134,7 @@ open preview/index.html
 npm run pack:tgz
 ```
 
-脚本会先创建 `dist/`，再生成 `dist/local-dsh-client-ui-ascii-ocean-0.10.0.tgz`，包含 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`。上游授权待确认期间，请勿再分发该包；打包成功不代表获得授权。
+脚本会先创建 `dist/`，再生成 `dist/local-dsh-client-ui-ascii-ocean-0.11.0.tgz`，包含 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`。上游授权待确认期间，请勿再分发该包；打包成功不代表获得授权。
 
 ## 目录
 
@@ -151,7 +149,7 @@ dsh-asciishark/
 │   └── client.js            # 浏览器端打包产物（esbuild IIFE）
 ├── preview/                 # 独立预览页 + 打包产物
 ├── docs/                    # 效果截图
-├── backup/                  # 安装前自动备份的 profile patch
+├── scripts/                 # 跨平台事务安装器及离线 YAML 解析器
 ├── src/ocean-worker.ts      # Web Worker：模拟 + ASCII 渲染（OffscreenCanvas）
 ├── src/worker-source.generated.ts  # 构建时生成（已 gitignore）
 ├── build.mjs                # 两段式 esbuild 构建脚本
@@ -163,17 +161,17 @@ dsh-asciishark/
 
 ## 实现要点
 
-- 包声明 `dsh.client.platform = "web"` 并导出 `./client` 产物；DSH 的 client-modules 宿主把 `lib/client.js` 作为懒加载 CJS bundle 服务到 `/plugins`，浏览器端 Cordis 树以 `inject: ["theme"]` 应用插件。
+- 包声明 `dsh.client.platform = "web"` 并导出 `./client` 产物；DSH 的 client-modules 宿主把 `lib/client.js` 作为懒加载 CJS bundle 服务到 `/plugins`，浏览器端 Cordis 树以 `inject: ["theme", "slots", "layout"]` 应用插件。
 - `apply(ctx)`：
   - 在 `body` 前置一层 `position: fixed; z-index: 0` 的全窗 canvas + 渐晕，`#root` 提到 `z-index: 1`；canvas 通过 `transferControlToOffscreen()` 交给 worker 渲染；
   - 把布局 frame 的背景清成透明，使海洋能透到 frame 后面的各栏；
   - 定位 `[data-slot="sidebar"]` 与 `[data-slot="main"]` 的父元素（即左栏和对话栏）：左栏清空自身填充 + 挂 `dsh-liquid-glass` 类，类内是一块**半分辨率快照 canvas**（每 120ms 由 worker 传回侧栏区域画面），再对快照施加 `blur + SVG 位移折射` 滤镜和一层很淡的冷色玻璃色调；无圆角、无内缩、无光晕、无 1px 高光边；对话栏内联 `--dsw-alias-bg-base / layer-1/2/3 / module-platform` 保持半透明可读；两套值随主题实时切换；
   - 监听 `theme/change` 换挡 canvas 反相/正常模式与渐晕；
-  - 每 0.8s 做一次轻量 `ensure()`：列元素被 React 重新挂载、布局切换或样式被重置时自动补挂；
+  - 每 0.7s 做一次轻量 `ensure()`：列元素被 React 重新挂载、布局切换或样式被重置时自动补挂；
   - 全部登记在 `ctx.effect` 作用域内，卸载时移除 canvas/样式/定时器，并逐项还原 frame 与两栏被改动的内联样式。
 - 右侧栏、菜单与弹窗使用各自原有的不透明 token / portal 层，天然不会被海洋影响。
 - 引擎的 `ResizeObserver` 跟随窗口尺寸（侧栏折叠、右栏展开、窗口缩放都自动适配）。
-- 玻璃滤镜只对 8fps 的半分辨率快照重新求值（而不是跟着海洋每帧跑）；海洋本身在 worker 里以 60fps 渲染，主线程只负责合成，因此动画顺滑且 UI 不卡。
+- 玻璃滤镜只对 8fps 的半分辨率快照重新求值（而不是跟着海洋每帧跑）；海洋本身在 worker 里以 60fps 为目标渲染。主线程仍负责快照、DOM 与合成，最终流畅度需在目标客户端验收。
 
 ## 致谢
 

@@ -1,31 +1,34 @@
-# Remove the ASCII-ocean background from the DSH Desktop profile (Windows).
-#
-# Usage:
-#   powershell -ExecutionPolicy Bypass -File .\uninstall-desktop.ps1
-#
-# Set DSH_PROFILE_DIR to target a different profile directory.
+# Run from the complete repository or installed package; no npm install needed.
 $ErrorActionPreference = "Stop"
-
+$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProfileDir = if ($env:DSH_PROFILE_DIR) { $env:DSH_PROFILE_DIR } else { Join-Path $env:USERPROFILE ".dsh\profiles\desktop" }
-$Patch = Join-Path $ProfileDir "cordis.patch.yml"
-$Dest = Join-Path $ProfileDir "node_modules\@local\dsh-client-ui-ascii-ocean"
-$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
-if (Test-Path $Dest) { Remove-Item -Recurse -Force $Dest }
-
-if (Test-Path $Patch) {
-  $Content = Get-Content -Raw -Path $Patch
-
-  # Remove exactly our dedicated insert block, leaving any other entries intact.
-  $Pattern = '(?ms)\r?\n- insert:\r?\n[ \t]+- id: ui-ascii-ocean\r?\n[ \t]+name: "[^"]*"\r?\n?'
-  $Content = [regex]::Replace($Content, $Pattern, "`r`n")
-
-  # Older installer versions added a comment above the block.
-  $Content = [regex]::Replace($Content, '(?m)^# ASCII-sharks animated background.*\r?\n', '')
-
-  $Content = $Content.TrimEnd() + "`r`n"
-  [System.IO.File]::WriteAllText($Patch, $Content, $Utf8NoBom)
+$Helper = Join-Path $Here "scripts\desktop.mjs"
+if (-not (Test-Path -LiteralPath $Helper -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $Here "scripts\vendor\yaml.mjs") -PathType Leaf)) {
+  throw "Installer support files are missing; use the complete repository/package. No files were changed."
 }
-
-Write-Host "removed: $Dest"
-Write-Host "If the app window still shows the background, press Ctrl+R to reload the page."
+$Candidates = @()
+if ($env:DSH_NODE_BIN) {
+  $Candidates += $env:DSH_NODE_BIN
+} else {
+  $NodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($NodeCommand) { $Candidates += $NodeCommand.Source }
+  # Best-effort paths for Desktop installations; system Node remains supported.
+  foreach ($Root in @($env:LOCALAPPDATA, $env:ProgramFiles)) {
+    if ($Root) {
+      foreach ($AppDir in @("Programs\DeepSeek Harness", "DeepSeek Harness")) {
+        foreach ($NodeRelative in @("resources\runtime\primary-runtime\dependencies\node\node.exe", "resources\runtime\primary-runtime\dependencies\node\bin\node.exe")) {
+          $Candidates += Join-Path (Join-Path $Root $AppDir) $NodeRelative
+        }
+      }
+    }
+  }
+}
+foreach ($NodeBin in $Candidates) {
+  if (-not (Test-Path -LiteralPath $NodeBin -PathType Leaf)) { continue }
+  & $NodeBin -e 'process.exit(Number.parseInt(process.versions.node, 10) >= 18 ? 0 : 1)' 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    & $NodeBin $Helper uninstall $ProfileDir
+    exit $LASTEXITCODE
+  }
+}
+throw "Node.js 18+ was not found. Install Node or set DSH_NODE_BIN to its executable. No files were changed."

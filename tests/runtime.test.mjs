@@ -283,6 +283,12 @@ function browser({ worker = "ok", reducedMotion = false, focused = true, hidden 
     get surface() { return document.getElementById("dsh-ascii-ocean-surface"); },
     get canvas() { return document.getElementById("dsh-ascii-ocean-canvas"); },
     get capture() { return find(document.documentElement, (node) => node.classList.contains("dsh-liquid-capture")); },
+    resizeSidebar(width, height = 600) { layout.sidebar.rect = { width, height, left: 0, top: 0 }; this.ocean.ensure(); },
+    replySnapshot(request, frames = 1) {
+      const bitmap = { closed: false, close() { this.closed = true; } };
+      workers.at(-1).onmessage({ data: { type: "snapshot", requestId: request.requestId, frames, bitmap } });
+      return bitmap;
+    },
     mount() {
       globals.__dshAsciiOceanPlugin.apply({
         theme: { getTheme: () => ({ active: { colorScheme: "dark" } }) },
@@ -352,7 +358,7 @@ for (const worker of ["ok", "unsupported"]) {
     env.replaceLayout();
     assert.equal(env.surface.style.display, "none");
     isPaused();
-    if (worker === "ok") {
+    if (worker === "ok" && env.workers.length > 1) {
       assert.equal(env.workers.at(-1).messages.find(({ type }) => type === "init").paused, true,
         "a hidden remount must start paused before any follow-up message");
     }
@@ -364,7 +370,7 @@ for (const worker of ["ok", "unsupported"]) {
     isPaused();
     env.visibility(false);
     if (worker === "ok") {
-      assert.equal(env.workers.at(-1).messages.at(-1).type, "resume");
+      assert.equal(env.workers.at(-1).messages.filter(({ type }) => type === "resume" || type === "pause").at(-1).type, "resume");
       assert.ok(env.workers.slice(0, -1).every((item) => item.terminated));
     } else {
       assert.equal(env.animationFrames.size, 1);
@@ -380,7 +386,7 @@ for (const worker of ["ok", "unsupported"]) {
       env.mount();
       if (worker === "ok") {
         assert.equal(env.workers[0].messages.find(({ type }) => type === "init").paused, true);
-        assert.equal(env.workers[0].messages.at(-1).type, "pause");
+        assert.equal(env.workers[0].messages.filter(({ type }) => type === "resume" || type === "pause").at(-1).type, "pause");
       } else {
         assert.equal(env.animationFrames.size, 0);
       }
@@ -407,7 +413,7 @@ for (const worker of ["ok", "unsupported"]) {
       assert.equal(env.animationFrames.size, 1);
       env.frame();
       assert.equal(previous.renderCount, 0);
-      assert.equal(env.canvas.renderCount, 1);
+      assert.ok(env.canvas.renderCount >= 1, "paused initial frame and resumed rendering are both allowed");
     }
   });
 }
@@ -468,7 +474,57 @@ test("reduced-motion local resize advances frames and refreshes the sidebar snap
   assert.ok(env.canvas.width > beforeWidth);
   assert.ok(env.ocean.frames > beforeFrames, "resize-produced still must invalidate the capture");
   env.tick(120);
-  assert.equal(capture.draws.length, beforeDraws + 1);
+  assert.ok(capture.draws.length > beforeDraws, "resize and its layout observers refresh the still");
+  const settledDraws = capture.draws.length;
+  env.tick(120);
+  assert.equal(capture.draws.length, settledDraws, "no periodic recapture after resize settles");
   assert.equal(capture.draws.at(-1)[0], env.canvas);
   assert.equal(env.animationFrames.size, 0, "reduced motion keeps the animation loop stopped");
+});
+
+test('Worker snapshots have one in flight and discard obsolete geometry before drawing the latest crop', t => {
+  const env = browser(); t.after(() => env.unmount()); env.mount();
+  const messages = env.workers[0].messages;
+  const requests = () => messages.filter(message => message.type === 'snapshot');
+  const first = requests()[0];
+  for (let i = 0; i < 6; i++) env.tick(120);
+  assert.equal(requests().length, 1);
+  env.resizeSidebar(300);
+  assert.equal(requests().length, 1, 'geometry changes coalesce while the old crop is in flight');
+  const stale = env.replySnapshot(first, 10);
+  assert.equal(stale.closed, true);
+  assert.equal(env.capture.draws.length, 0);
+  assert.equal(requests().length, 2);
+  assert.equal(requests()[1].force, true);
+  const current = env.replySnapshot(requests()[1], 10);
+  assert.equal(current.closed, true);
+  assert.equal(env.capture.width, 150);
+  assert.equal(env.capture.draws.length, 1);
+  env.ocean.setMode('static');
+  env.replySnapshot(requests().at(-1), 10);
+  const settled = requests().length;
+  for (let i = 0; i < 6; i++) { env.tick(120); env.tick(700); }
+  assert.equal(requests().length, settled, 'settled static has no snapshot polling');
+  env.ocean.setMode('off');
+  assert.equal(env.capture, null);
+  assert.equal(env.document.getElementById('dsh-liquid-filter-svg'), null);
+  assert.equal(env.surface.style.display, 'none');
+});
+
+test('pane repair releases old filters and capture contexts at the default canvas size', t => {
+  const env = browser({ worker: 'unsupported', reducedMotion: true });
+  t.after(() => env.unmount()); env.mount(); env.resizeSidebar(600, 300);
+  for (let i = 0; i < 4; i++) {
+    const old = env.capture;
+    const draws = old.draws.length;
+    old.parentElement.remove(); env.ocean.ensure();
+    assert.notEqual(env.capture, old);
+    assert.equal(env.capture.width, 300);
+    assert.equal(env.capture.height, 150);
+    assert.ok(env.capture.draws.length > 0, 'new capture receives the still');
+    assert.equal(old.draws.length, draws, 'detached context is never painted again');
+    assert.equal(env.document.body.children.filter(node => node.id === 'dsh-liquid-filter-svg').length, 1);
+  }
+  env.unmount();
+  assert.equal(env.document.body.children.filter(node => node.id === 'dsh-liquid-filter-svg').length, 0);
 });

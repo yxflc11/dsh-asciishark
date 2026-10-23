@@ -32,6 +32,16 @@ permission remains unresolved.
   and rebuild the bundles.
 - Copyright: © the ascii-sharks author (stackedlol).
 
+## eemeli/yaml
+
+- Source: https://github.com/eemeli/yaml (npm package `yaml`, version 2.9.1).
+- Usage: the offline desktop installation helper includes a bundled YAML syntax
+  parser in `scripts/vendor/yaml.mjs`. It locates configuration entries without
+  evaluating DSH `!!js` expressions or rewriting unrelated configuration.
+- License: ISC. The complete original copyright and permission notice is
+  included in `scripts/vendor/yaml.LICENSE` and copied with every installation.
+- Build provenance: see `scripts/vendor/README.md`.
+
 ## rdev/liquid-glass-react
 
 - Source: https://github.com/rdev/liquid-glass-react

@@ -4,23 +4,24 @@
  * calls. It also hands small snapshots back for the liquid-glass sidebar.
  *
  * Protocol (main → worker):
- *   init     { canvas, width, height, dpr, maxFps, sharks, fontFamily, reducedMotion, paused }
+ *   init     { canvas, width, height, dpr, maxFps, sharks, fontFamily, reducedMotion, paused, initialStatic }
  *   resize   { width, height, dpr }
  *   fps      { fps }
  *   reduce   { reducedMotion }
  *   pause / resume
  *   pointer  { x, y, active }
  *   splash   { x, y }
- *   snapshot { rect: {x,y,w,h}, cw, ch, since }
+ *   snapshot { requestId, rect: {x,y,w,h}, cw, ch, since, force? }
  *   dispose
  * Worker → main:
- *   snapshot { bitmap, frames }
+ *   snapshot { requestId, bitmap?, frames, skipped?, reason? }
  */
 import { AsciiRenderer } from "./ascii-sharks/renderer";
 import { World, type SharkSpec } from "./ascii-sharks/world";
 
 const STEP = 1 / 60;
 const MAX_STEPS = 4;
+const FRAME_EPSILON = 0.5;
 
 let canvas: OffscreenCanvas | null = null;
 let renderer: AsciiRenderer | null = null;
@@ -31,10 +32,11 @@ let maxFps = 60;
 let dpr = 1;
 let paused = false;
 let reduced = false;
+let initialStatic = false;
 let disposed = false;
 let acc = 0;
 let last = 0;
-let lastDraw = 0;
+let nextDraw = 0;
 let frames = 0;
 let width = 0;
 let height = 0;
@@ -48,7 +50,7 @@ function schedule() {
   stop();
   if (paused || reduced || disposed || !renderer) return;
   last = performance.now();
-  lastDraw = last;
+  nextDraw = last + 1000 / maxFps;
   acc = 0;
   timer = setTimeout(frame, 1000 / maxFps);
 }
@@ -57,6 +59,12 @@ function frame() {
   timer = null;
   if (paused || reduced || disposed || !renderer || !world) return;
   const now = performance.now();
+  if (now + FRAME_EPSILON < nextDraw) {
+    timer = setTimeout(frame, nextDraw - now);
+    return;
+  }
+  const interval = 1000 / maxFps;
+  nextDraw += Math.max(1, Math.floor((now - nextDraw) / interval) + 1) * interval;
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   acc += dt;
@@ -69,14 +77,13 @@ function frame() {
   if (steps === MAX_STEPS) acc = 0;
   renderer.render(world, dt);
   frames++;
-  const interval = 1000 / maxFps;
-  const wait = Math.max(0, interval - (performance.now() - now));
+  const wait = Math.max(0, nextDraw - performance.now());
   timer = setTimeout(frame, wait);
 }
 
-function drawStill() {
+function drawStill(warmup = false) {
   if (!renderer || !world) return;
-  if (world.time < 4) for (let i = 0; i < 240; i++) world.step(STEP);
+  if (warmup && world.time < 4) for (let i = 0; i < 240; i++) world.step(STEP);
   renderer.render(world, STEP);
   frames++;
 }
@@ -88,7 +95,7 @@ function resize(nextWidth: number, nextHeight: number, nextDpr: number) {
   if (!renderer || !world) return;
   renderer.resize(width, height, dpr);
   world.resize(width, height, renderer.cellWidth, renderer.cellHeight);
-  if (reduced) drawStill();
+  if (reduced || paused) drawStill(frames === 0 && (reduced || initialStatic));
 }
 
 function makeRenderer(nextCanvas: OffscreenCanvas, fontFamily: string, sharks: SharkSpec[]) {
@@ -98,25 +105,38 @@ function makeRenderer(nextCanvas: OffscreenCanvas, fontFamily: string, sharks: S
   world = new World(sharks);
 }
 
-function replySnapshot(rect: { x: number; y: number; w: number; h: number }, cw: number, ch: number, since: number) {
-  if (!canvas || disposed) return;
-  if (frames === since) return;
-  const w = Math.max(1, Math.round(cw));
-  const h = Math.max(1, Math.round(ch));
-  if (!snapshotCanvas) snapshotCanvas = new OffscreenCanvas(w, h);
-  if (snapshotCanvas.width !== w) snapshotCanvas.width = w;
-  if (snapshotCanvas.height !== h) snapshotCanvas.height = h;
-  const ctx = snapshotCanvas.getContext("2d");
-  if (!ctx) return;
-  const sx = Math.max(0, rect.x * dpr);
-  const sy = Math.max(0, rect.y * dpr);
-  const sw = Math.min(canvas.width - sx, rect.w * dpr);
-  const sh = Math.min(canvas.height - sy, rect.h * dpr);
-  if (sw < 1 || sh < 1) return;
-  ctx.clearRect(0, 0, w, h);
-  ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, w, h);
-  const bitmap = snapshotCanvas.transferToImageBitmap();
-  self.postMessage({ type: "snapshot", bitmap, frames }, { transfer: [bitmap] } as unknown as StructuredSerializeOptions);
+function replySnapshot(
+  requestId: string | number | undefined,
+  rect: { x: number; y: number; w: number; h: number }, cw: number, ch: number,
+  since: number, force: boolean,
+) {
+  const skip = (reason: string) => self.postMessage({ type: "snapshot", requestId, frames, skipped: true, reason });
+  if (!canvas || disposed) return skip("unavailable");
+  if (frames === since && !force) return skip("unchanged");
+  if (!rect || ![rect.x, rect.y, rect.w, rect.h, cw, ch].every(Number.isFinite) ||
+    rect.w <= 0 || rect.h <= 0 || cw <= 0 || ch <= 0) return skip("empty");
+  let bitmap: ImageBitmap | null = null;
+  try {
+    const w = Math.max(1, Math.round(cw));
+    const h = Math.max(1, Math.round(ch));
+    if (!snapshotCanvas) snapshotCanvas = new OffscreenCanvas(w, h);
+    if (snapshotCanvas.width !== w) snapshotCanvas.width = w;
+    if (snapshotCanvas.height !== h) snapshotCanvas.height = h;
+    const ctx = snapshotCanvas.getContext("2d");
+    if (!ctx) return skip("unavailable");
+    const sx = Math.max(0, rect.x * dpr);
+    const sy = Math.max(0, rect.y * dpr);
+    const sw = Math.min(canvas.width - sx, rect.w * dpr);
+    const sh = Math.min(canvas.height - sy, rect.h * dpr);
+    if (sw < 1 || sh < 1) return skip("empty");
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, w, h);
+    bitmap = snapshotCanvas.transferToImageBitmap();
+    self.postMessage({ type: "snapshot", requestId, bitmap, frames }, { transfer: [bitmap] } as unknown as StructuredSerializeOptions);
+  } catch {
+    bitmap?.close();
+    skip("failed");
+  }
 }
 
 self.onmessage = (event: MessageEvent) => {
@@ -126,7 +146,8 @@ self.onmessage = (event: MessageEvent) => {
       makeRenderer(data.canvas as OffscreenCanvas, data.fontFamily ?? "", (data.sharks ?? []) as SharkSpec[]);
       maxFps = Math.max(5, Math.min(60, data.maxFps ?? 60));
       reduced = data.reducedMotion === true;
-      paused = data.paused === true;
+      initialStatic = data.initialStatic === true;
+      paused = data.paused === true || initialStatic;
       resize(data.width, data.height, data.dpr ?? 1);
       schedule();
       break;
@@ -136,10 +157,12 @@ self.onmessage = (event: MessageEvent) => {
       break;
     case "fps":
       maxFps = Math.max(5, Math.min(60, data.fps ?? 60));
+      schedule();
       break;
     case "reduce":
       reduced = data.reducedMotion === true;
       if (reduced) {
+        if (world) world.pointer.active = false;
         stop();
         drawStill();
       } else {
@@ -148,6 +171,7 @@ self.onmessage = (event: MessageEvent) => {
       break;
     case "pause":
       paused = true;
+      if (world) world.pointer.active = false;
       stop();
       break;
     case "resume":
@@ -158,14 +182,14 @@ self.onmessage = (event: MessageEvent) => {
       if (world) {
         world.pointer.x = data.x;
         world.pointer.y = data.y;
-        world.pointer.active = data.active === true;
+        world.pointer.active = !paused && !reduced && data.active === true;
       }
       break;
     case "splash":
-      world?.splash(data.x, data.y);
+      if (!paused && !reduced && !disposed) world?.splash(data.x, data.y);
       break;
     case "snapshot":
-      replySnapshot(data.rect, data.cw, data.ch, data.since ?? -1);
+      replySnapshot(data.requestId, data.rect, data.cw, data.ch, data.since ?? -1, data.force === true);
       break;
     case "dispose":
       disposed = true;

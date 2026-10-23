@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-client-ui-ascii-ocean",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "ASCII shark ocean rendered in a worker, behind an Apple Liquid Glass sidebar",
   "type": "module",
@@ -13,7 +13,10 @@
   "dsh": {
     "client": {
       "platform": "web",
-      "inject": []
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
     }
   },
   "scripts": {
@@ -28,7 +31,12 @@
     "lib",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "scripts",
+    "install-desktop.sh",
+    "install-desktop.ps1",
+    "uninstall-desktop.sh",
+    "uninstall-desktop.ps1"
   ],
   "license": "SEE LICENSE IN THIRD_PARTY_NOTICES.md",
   "repository": {
