@@ -1,25 +1,35 @@
 # Third-party notices
 
-This project contains code and ideas adapted from the following open-source
-projects. Their notices are reproduced below.
+This project contains code and ideas adapted from the following third-party
+projects. Each component's license or pending permission status is described below.
 
 ## @local/dsh-client-ui-ascii-ocean (this repository)
 
-Licensed under the MIT License. See `LICENSE`.
+Original contributions that the maintainer is entitled to license are available
+under the MIT License. See `LICENSE`. This does not grant rights to third-party
+code, including the ascii-sharks sources or their copies in compiled bundles.
+The package as a whole must not be treated as fully MIT-licensed while upstream
+permission remains unresolved.
 
 ## stackedlol/ascii-sharks
 
 - Source: https://github.com/stackedlol/ascii-sharks
-- Usage: the animation engine and ASCII renderer (`src/ascii-sharks/`) are a
-  source copy of that project, with small worker/OffscreenCanvas compatibility
-  changes.
-- License: the upstream repository does not include a LICENSE file (checked
-  October 2026), so no license is declared by the author. It is used here with
-  attribution. **The maintainer is requesting permission from the upstream
-  author (October 2026). Until that permission is confirmed, please do not
-  redistribute this repository or the built plugin package. If permission
-  cannot be obtained, the copied sources should be replaced with a licensed
-  implementation.**
+- Usage: copies of `engine.ts`, `index.ts`, `math.ts`, `react.tsx`, `renderer.ts`,
+  `species.ts`, `world.ts`, and the upstream README under `src/ascii-sharks/`,
+  with worker/OffscreenCanvas adaptations. The engine is also included in
+  `lib/client.js` and `preview/ocean.global.js`.
+- License: no upstream license was found as of 2026-10-23, when upstream `main`
+  pointed to `c521e24a787e6d4cc460d4cf2b9815f25e4fe453`. Attribution alone is not
+  permission to use, modify, or redistribute this code.
+- Permission request: [submitted by yxflc11 on 2026-10-23](https://github.com/stackedlol/ascii-sharks/issues/1#issuecomment-6355506507).
+  The request covers the incorporated version, continued modification and
+  integration, source and compiled plugin/preview distribution, and downstream
+  rights under MIT. **Permission is pending, not granted. Until it is confirmed,
+  please do not redistribute this repository or the built plugin/preview
+  bundles.** If permission is granted, retain the author's copyright notice and
+  full license text in the repository and distributed packages. If permission
+  cannot be obtained, replace the copied sources with a licensed implementation
+  and rebuild the bundles.
 - Copyright: © the ascii-sharks author (stackedlol).
 
 ## rdev/liquid-glass-react

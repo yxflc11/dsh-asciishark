@@ -284,6 +284,8 @@ function createOcean(ctx: any): OceanHandle {
   let workerFrames = 0;
   let targets: Targets | null = null;
   let hidden = false;
+  let focused = document.hasFocus();
+  const shouldRun = () => !hidden && !document.hidden && focused;
   const savedProps = new Map<HTMLElement, Map<string, { value: string; priority: string }>>();
   const glassEls = new Set<HTMLElement>();
   let savedFrame: { el: HTMLElement; value: string; priority: string } | null = null;
@@ -421,12 +423,16 @@ function createOcean(ctx: any): OceanHandle {
   const post = (message: any) => worker?.postMessage(message);
 
   const stopWorker = () => {
-    if (!worker) return;
-    try { worker.postMessage({ type: "dispose" }); } catch { /* ignore */ }
-    worker.terminate();
-    worker = null;
+    if (worker) {
+      worker.onmessage = null;
+      worker.onerror = null;
+      try { worker.postMessage({ type: "dispose" }); } catch { /* ignore */ }
+      worker.terminate();
+      worker = null;
+    }
     if (workerUrl) URL.revokeObjectURL(workerUrl);
     workerUrl = null;
+    workerFrames = 0;
   };
 
   const restartCanvasForFallback = () => {
@@ -436,26 +442,28 @@ function createOcean(ctx: any): OceanHandle {
     next.setAttribute("aria-hidden", "true");
     canvas.replaceWith(next);
     canvas = next;
+    lastCapturedFrame = -1;
   };
 
   const startLocalEngine = () => {
     if (!canvas) return;
     engine = new OceanEngine(canvas, SHARKS, { maxFps: 60, maxDpr: 1.5 });
+    syncPlayback();
   };
 
   const startWorker = (): boolean => {
     if (!canvas) return false;
     try {
       const off = canvas.transferControlToOffscreen();
-      const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" }));
-      const next = new Worker(url);
+      workerUrl = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" }));
+      const next = new Worker(workerUrl);
       worker = next;
-      workerUrl = url;
       next.onmessage = (event: MessageEvent) => {
         const data = event.data as Record<string, any>;
         if (data?.type === "snapshot" && data.bitmap) drawSnapshot(data.bitmap as ImageBitmap, data.frames as number);
       };
       next.onerror = () => {
+        if (worker !== next) return;
         // A worker failure is rare; rebuild the canvas and run the in-page engine.
         stopWorker();
         restartCanvasForFallback();
@@ -473,12 +481,16 @@ function createOcean(ctx: any): OceanHandle {
           sharks: SHARKS,
           fontFamily: getComputedStyle(canvas).fontFamily,
           reducedMotion: typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches,
+          paused: !shouldRun(),
         },
         [off],
       );
+      syncPlayback();
       return true;
     } catch {
       stopWorker();
+      // The canvas may already be transferred even when Worker construction fails.
+      restartCanvasForFallback();
       return false;
     }
   };
@@ -600,11 +612,21 @@ function createOcean(ctx: any): OceanHandle {
     post({ type: "resume" });
     engine?.resume();
   };
-  const onWindowBlur = () => pauseOcean();
-  const onWindowFocus = () => resumeOcean();
+  const syncPlayback = () => {
+    if (shouldRun()) resumeOcean();
+    else pauseOcean();
+  };
+  const onWindowBlur = () => {
+    focused = false;
+    syncPlayback();
+  };
+  const onWindowFocus = () => {
+    focused = true;
+    syncPlayback();
+  };
   const onVisibility = () => {
-    if (document.hidden) pauseOcean();
-    else resumeOcean();
+    focused = document.hasFocus();
+    syncPlayback();
   };
   const onWindowResize = () => {
     const size = workerSize();
@@ -625,6 +647,11 @@ function createOcean(ctx: any): OceanHandle {
 
   const mountSurface = () => {
     if (wrap?.isConnected) return;
+    // A host remount can detach the surface before ensure() runs.
+    engine?.destroy();
+    engine = null;
+    stopWorker();
+    lastCapturedFrame = -1;
     wrap = document.createElement("div");
     wrap.id = SURFACE_ID;
     wrap.dataset.scheme = scheme;
@@ -719,8 +746,7 @@ function createOcean(ctx: any): OceanHandle {
     toggle() {
       hidden = !hidden;
       if (wrap) wrap.style.display = hidden ? "none" : "";
-      if (hidden) pauseOcean();
-      else resumeOcean();
+      syncPlayback();
       return !hidden;
     },
     destroy() {

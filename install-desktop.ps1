@@ -22,6 +22,9 @@ if (Test-Path $Dest) { Remove-Item -Recurse -Force $Dest }
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Copy-Item -Recurse -Force (Join-Path $Here "lib") $Dest
 Copy-Item -Force (Join-Path $Here "package.json") $Dest
+Copy-Item -Force (Join-Path $Here "README.md") $Dest
+Copy-Item -Force (Join-Path $Here "LICENSE") $Dest
+Copy-Item -Force (Join-Path $Here "THIRD_PARTY_NOTICES.md") $Dest
 
 # 2. Patch row: hot-reloaded by dsh-hmr, so the canvas appears without a restart.
 $Content = Get-Content -Raw -Path $Patch

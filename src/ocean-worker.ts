@@ -4,7 +4,7 @@
  * calls. It also hands small snapshots back for the liquid-glass sidebar.
  *
  * Protocol (main → worker):
- *   init     { canvas, width, height, dpr, maxFps, sharks, fontFamily, reducedMotion }
+ *   init     { canvas, width, height, dpr, maxFps, sharks, fontFamily, reducedMotion, paused }
  *   resize   { width, height, dpr }
  *   fps      { fps }
  *   reduce   { reducedMotion }
@@ -126,7 +126,7 @@ self.onmessage = (event: MessageEvent) => {
       makeRenderer(data.canvas as OffscreenCanvas, data.fontFamily ?? "", (data.sharks ?? []) as SharkSpec[]);
       maxFps = Math.max(5, Math.min(60, data.maxFps ?? 60));
       reduced = data.reducedMotion === true;
-      paused = false;
+      paused = data.paused === true;
       resize(data.width, data.height, data.dpr ?? 1);
       schedule();
       break;
