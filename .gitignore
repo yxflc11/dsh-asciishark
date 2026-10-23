@@ -1,0 +1,7 @@
+node_modules/
+.tmp/
+dist/
+*.tgz
+.DS_Store
+src/worker-source.generated.ts
+backup/
